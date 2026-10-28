@@ -25,7 +25,7 @@ set -eu
 n=$#
 for arg in "$@"; do
   case $arg in
-    PAN=*|STATIC=*|POWER=*|WINDOW=*|ENTER_SCRIPT=*|KEEP_LAYER_PROP=*|SR_SHARP=*|SR_FULL=*|SR_SCALE=*|SR_OUT=*|IP_MODE=*|IP_FPS=*|GFRC_BUF=*|IP_TUNE=*|COOL_MAX=*|SETS=*|SFWAIT_OFF=*)
+    PAN=*|STATIC=*|POWER=*|WINDOW=*|ENTER_SCRIPT=*|KEEP_LAYER_PROP=*|SR_SHARP=*|SR_FULL=*|SR_SCALE=*|SR_OUT=*|IP_MODE=*|IP_FPS=*|GFRC_BUF=*|IP_TUNE=*|COOL_MAX=*|SETS=*|SFWAIT_OFF=*|HOLD_KEEP=*)
       export "$arg" ;;
     *) set -- "$@" "$arg" ;;
   esac

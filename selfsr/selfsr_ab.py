@@ -26,7 +26,7 @@
 收尾 (含 Ctrl-C): Game Mode 恢复原模式并 reset 干预、清 debug.knobs.selfsr、screen_off_timeout 还原, 逐项回读核对。
 统计: 每对 (B - A) 配对差, 精确符号翻转检验 + bootstrap 95% 区间。
 """
-import argparse, json, os, re, shlex, signal, statistics, subprocess, sys, time, uuid
+import argparse, json, os, re, shlex, signal, statistics, subprocess, sys, threading, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # phonefarm 树：作为平台的实验任务运行时由节点给 PF_ROOT；在 phonefarm/loop_v1 老位置直接跑时回退到上两级。
@@ -651,6 +651,38 @@ def arm_plain(a, out, name, k, orig_mode):
     return rec
 
 
+def keep120(a, k, name, out, events, stop):
+    """测量窗口内的看门狗 (HOLD_KEEP=1): 电池温度向上穿 ~43°C 时厂商控制器会把屏幕压回 60 Hz
+    (hold 探测结论: 触发是穿越事件, 高温之上/降温中不掉, 掉后不自己回来)。每秒读 SF mPeriod,
+    偏离目标 >3 Hz 就重设 refresh_rate_mode 0→目标 (探测三 P1 实测: 重设 2 次, 之后稳定到结束)。
+    每秒一行写 traces/<名>_keep.tsv, 重设时刻记进 events。"""
+    dev = Dev(a.serial)
+    panel = str((k.get("tune") or {}).get("panel"))
+    target = str(PANEL_MODE[panel])
+    tsv = os.path.join(out, "traces", f"{name}_keep.tsv")
+    rows = ["wall\thz\taction"]
+    while not stop["run"]:
+        hz, act = None, ""
+        try:
+            per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod", timeout=20)
+            m = re.search(r"\(([0-9.]+) fps\)", per or "")
+            hz = float(m.group(1)) if m else None
+            if hz is not None and abs(hz - float(panel)) > 3:
+                dev.shell("settings put system refresh_rate_mode 0")
+                time.sleep(0.5)
+                dev.shell(f"settings put system refresh_rate_mode {target}")
+                act = "reassert"
+                events.append({"t": time.time(), "hz": hz})
+        except Exception:
+            pass
+        rows.append(f"{time.strftime('%H:%M:%S')}\t{hz if hz is not None else ''}\t{act}")
+        try:
+            open(tsv, "w").write("\n".join(rows) + "\n")
+        except OSError:
+            pass
+        time.sleep(1)
+
+
 def arm_layer(a, out, name, k, note, locked):
     dev = Dev(a.serial)
     rec = {}
@@ -744,14 +776,32 @@ def arm_layer(a, out, name, k, note, locked):
         m0 = marker()
         csv0 = interp_csv_size(dev, a) if k["kind"] in ("ip", "srip") else 0
         t0 = uptime_ns(dev)
+        keep_events, keep_stop = [], {"run": False}
+        kthr = None
+        if panel and os.environ.get("HOLD_KEEP") == "1":   # 窗口内看门狗: 掉落立刻重设 (keep120, 探测三 P1 验证)
+            kthr = threading.Thread(target=keep120, args=(a, k, name, out, keep_events, keep_stop), daemon=True)
+            kthr.start()
         rec.update(measure(dev, a, name, out))
         t1 = uptime_ns(dev)
         if panel:   # 窗口结束再回读一次: 系统可能在窗口中途把刷新率压回去 (真机: 开始 120 Hz, 窗口内降到 60, 子图层只上屏 60)
             per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
             rec["panel_period_end"] = per.strip()
             m = re.search(r"\(([0-9.]+) fps\)", per)
-            if not m or abs(float(m.group(1)) - float(panel)) > 3 or rec.get("display_hz") not in (None, int(panel)):
+            if not m or abs(float(m.group(1)) - float(panel)) > 3:
+                time.sleep(3)   # 看门狗可能正卡在重设中间, 给一个周期重读
+                per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
+                rec["panel_period_end"] = per.strip()
+                m = re.search(r"\(([0-9.]+) fps\)", per)
+            # HOLD_KEEP 在场时窗口内可能有「穿 43°C → 掉 60 → 重设回 120」的短暂凹陷:
+            # 结束时 mPeriod 在目标上、且发生过重设, timestats display_hz 读到 60 也不作废 (凹陷秒数记 keep_dips, 逐秒在 keep.tsv)
+            dip = bool(kthr is not None and keep_events)
+            if not m or abs(float(m.group(1)) - float(panel)) > 3 or (rec.get("display_hz") not in (None, int(panel)) and not dip):
                 rec["error"] = f"测量窗口内屏幕没保持 {panel} Hz: 结束时 {per.strip()}, timestats {rec.get('display_hz')} Hz"
+            if dip:
+                rec["keep_dips"] = len(keep_events)
+        keep_stop["run"] = True
+        if kthr is not None:
+            kthr.join(timeout=10)
         m1 = marker()
         if k["kind"] in ("ip", "srip"):   # 窗口内层回读的实际上屏 (会话累计的环形统计混着加载期, 不可用)
             rec["interp_window"] = interp_window(dev, a, name, out, t0, t1, since=csv0)
