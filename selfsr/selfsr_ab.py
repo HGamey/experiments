@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """selfsr_ab.py — 自研超分/插帧的两臂 ABBA (冷启动、进大世界、同一套测量)。不改游戏内任何设置。
 
-    python3 -I loop_v1/selfsr/selfsr_ab.py run --serial <S> --out <目录> --a native --b layer [--rounds 6]
+    python3 -I selfsr/selfsr_ab.py run --serial <S> --out <目录> --a native --b layer [--rounds 6]
 
 臂的种类 (--a / --b):
   native              原生: 不挂层, Game Mode 无干预
@@ -29,8 +29,11 @@
 import argparse, json, os, re, shlex, signal, statistics, subprocess, sys, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(HERE))
-sys.path.insert(0, os.path.join(REPO, "loop_v1", "gfrc"))
+# phonefarm 树：作为平台的实验任务运行时由节点给 PF_ROOT；在 phonefarm/loop_v1 老位置直接跑时回退到上两级。
+REPO = os.environ.get("PF_ROOT") or os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "gfrc"))
+# 节点任务里 DEVLOCK_LABEL=job-<任务ID>：设备锁标签挂在它下面，看板就能把手机占用对到任务和研究。
+LOCK_PREFIX = os.environ["DEVLOCK_LABEL"] + "-" if os.environ.get("DEVLOCK_LABEL") else ""
 from gfrc_ab import Dev, parse_timestats, layer_src, sharpness, signflip, boot_ci, set_pkg_bits  # noqa: E402
 
 PKG_DEFAULT = "com.miHoYo.Yuanshen"
@@ -674,7 +677,7 @@ def main():
     ap.add_argument("--fan", action="store_true", help="整轮开机身风扇最高档 (红魔 /sys/kernel/fan), 收尾写回原值; 没有该节点的机器跳过")
     ap.add_argument("--pan", action="store_true", help="窗口后录屏 + 拖视角, 量 HUD 重影 (原神右下技能区)")
     ap.add_argument("--sf-atrace", action="store_true", help="窗口后抓 3 s SF atrace, 每秒数 waitframe 等 fence / 整帧跳过 / 缓冲被顶掉 (要 root)")
-    ap.add_argument("--power", action="store_true", help="测量窗口内停充采整机功耗 (高通机 + root, 见 loop_v1/tools/power_sample.sh)")
+    ap.add_argument("--power", action="store_true", help="测量窗口内停充采整机功耗 (高通机 + root, 见 selfsr/power_sample.sh)")
     ap.add_argument("--phonefarm", default=os.environ.get("PHONEFARM_BIN") or os.path.join(REPO, "phonefarm"))
     # _locked 内部用
     ap.add_argument("--what", default=None)
@@ -732,7 +735,7 @@ def main():
 
     def locked(what, name, k_str):
         # 标签带序列号「<标签>@<序列号>」: 看板与远程调试据此只把这一台当作测量中 (harness-ops 的约定)
-        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
+        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"{LOCK_PREFIX}selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
                os.path.abspath(__file__), "_locked", "--what", what, "--name", name, "--kind", k_str,
                "--orig-mode", orig_mode, "--serial", a.serial, "--pkg", a.pkg, "--out", out,
                "--settle", str(a.settle), "--window", str(a.window), "--phonefarm", a.phonefarm]
@@ -793,7 +796,7 @@ def main():
         if dev.su(f"[ -w {CHG_NODE} ] && echo yes").strip() != "yes":
             note(f"--power: 这台机器没有可写的 {CHG_NODE}, 量不了整机功耗")
             return 2
-        dev.adb(f"push {shlex.quote(os.path.join(REPO, 'loop_v1/tools/power_sample.sh'))} {DEV_POWER}", check=True)
+        dev.adb(f"push {shlex.quote(os.path.join(HERE, 'power_sample.sh'))} {DEV_POWER}", check=True)
         # 自动亮度会随环境光变, 两臂功耗就不可比: 整轮固定为手动, 亮度值不动
         bright_orig = (dev.shell("settings get system screen_brightness_mode").strip(),
                        dev.shell("settings get system screen_brightness").strip())

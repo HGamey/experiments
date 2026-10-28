@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """act.py — 给已在跑的 gray-layer session 发一个动作并等回执。
-   python3 loop_v1/selfsr/act.py <session_out> <action> ['{"params":...}']
+   python3 selfsr/act.py <session_out> <action> ['{"params":...}']
 打印回执 JSON。"""
 import json, os, subprocess, sys, time, uuid
-PF = os.environ.get("PHONEFARM_BIN") or os.path.join(os.path.dirname(__file__), "..", "..", "phonefarm")
+PF = os.environ.get("PHONEFARM_BIN") or os.path.join(os.environ.get("PF_ROOT") or os.path.join(os.path.dirname(__file__), "..", ".."), "phonefarm")
 out, action = sys.argv[1], sys.argv[2]
 params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
 def pf(*a, inp=None):

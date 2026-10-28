@@ -1,13 +1,13 @@
 #!/bin/sh
 # panel_probe.sh — 原神在前台时, 哪种可还原的办法能让屏幕跑到高刷 (插帧要屏幕刷新率高于游戏帧率)。
-#   tools/devlock run panel-probe -- sh loop_v1/selfsr/panel_probe.sh <serial> <输出目录> [包名]
+#   tools/devlock run panel-probe -- sh selfsr/panel_probe.sh <serial> <输出目录> [包名]
 # 先冷启动进大世界 (phonefarm onboard --enter-only), 再逐个试:
 #   A. system min_refresh_rate / peak_refresh_rate = 144 (AOSP 标准设置)
 #   B. system refresh_rate_mode = 1..4 (红魔自带, 取值含义未知, 逐个试)
 # 每种施加后等 6 s, 记 SurfaceFlinger 当前刷新周期与 dumpsys display 的活动模式; 试完写回原值并回读核对。
 set -u
 S="${1:?serial}"; OUT="${2:?outdir}"; PKG="${3:-com.miHoYo.Yuanshen}"
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=${PF_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 PF="${PHONEFARM_BIN:-$ROOT/phonefarm}"
 mkdir -p "$OUT"
 a() { adb -s "$S" shell "$@" 2>&1 | tr -d '\r'; }

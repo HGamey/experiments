@@ -21,10 +21,14 @@
 # 每组结束 (含 Ctrl-C) 都把 Game Mode、G-FRC+ 位、debug.knobs.*、刷新率、风扇、屏幕超时写回并回读核对,
 # 层由 gray-layer session 摘除。超分算子用 Catmull-Rom + RCAS (层缺省)。
 set -eu
-SERIAL="${1:?用法: sh loop_v1/selfsr/repro.sh <serial> [配对数] [输出目录] [包名]}"
+SERIAL="${1:?用法: sh selfsr/repro.sh <serial> [配对数] [输出目录] [包名]}"
 ROUNDS="${2:-6}"
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-OUT="${3:-$ROOT/_runs/selfsr_$(date +%Y%m%d-%H%M%S)}"
+HERE=$(cd "$(dirname "$0")" && pwd)
+# phonefarm 树：平台实验任务里是节点给的 PF_ROOT；在 phonefarm/loop_v1 老位置直接跑时回退到上两级。
+ROOT=${PF_ROOT:-$(cd "$HERE/../.." && pwd)}
+# 层：本目录带的实验版本 (gray/)；没有时用 phonefarm 自带的。产物在平台任务里进任务输出目录。
+LAYER="$HERE/gray"; [ -d "$LAYER" ] || LAYER="$ROOT/knobs/gray"
+OUT="${3:-${PF_JOB_OUT:-$ROOT/_runs}/selfsr_$(date +%Y%m%d-%H%M%S)}"
 PKG="${4:-com.miHoYo.Yuanshen}"
 # 满分辨率超分目标 = 本机屏幕横屏尺寸 (换机不用改)
 PANEL=$(adb -s "$SERIAL" shell wm size | tr -d '\r' | sed -n 's/.*: *\([0-9]*\)x\([0-9]*\)$/\1 \2/p' | tail -1 | awk '{print ($1>$2)?$1"x"$2:$2"x"$1}')
@@ -57,13 +61,13 @@ if [ -z "$BIN" ]; then
   codesign --force --sign - "$BIN" 2>/dev/null || true
 fi
 [ "$(adb -s "$SERIAL" shell su -c id 2>/dev/null | grep -c 'uid=0')" = 1 ] || { echo "这台手机没有 root, 层装不进游戏"; exit 2; }
-bash "$ROOT/knobs/gray/build/build_layer.sh" >/dev/null
+bash "$LAYER/build/build_layer.sh" >/dev/null
 mkdir -p "$OUT"
 SO="$OUT/libVkLayer_refknobs.so"
-cp "$ROOT/knobs/gray/build/out/libVkLayer_refknobs.so" "$SO"
+cp "$LAYER/build/out/libVkLayer_refknobs.so" "$SO"
 HAS_GFRC=$(adb -s "$SERIAL" shell getprop ro.vendor.feature.zte_feature_gfrc | tr -d '\r')
 run() {  # run <组名> <A> <B>
-  PHONEFARM_BIN="$BIN" python3 -I "$ROOT/loop_v1/selfsr/selfsr_ab.py" run --serial "$SERIAL" --pkg "$PKG" \
+  PHONEFARM_BIN="$BIN" python3 -I "$HERE/selfsr_ab.py" run --serial "$SERIAL" --pkg "$PKG" \
     --out "$OUT/$1" --a "$2" --b "$3" --rounds "$ROUNDS" --so "$SO" --phonefarm "$BIN" --fan --cool-max "$COOL_MAX" \
     --window "${WINDOW:-10}" ${POWER:+--power} ${PAN:+--pan} \
     ${ENTER_SCRIPT:+--enter-script "$ENTER_SCRIPT"} ${KEEP_LAYER_PROP:+--keep-layer-prop}

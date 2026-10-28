@@ -5,11 +5,12 @@
 # 前提: refbench (REFBENCH_DEBUGGABLE=1 编) 已装; 层用 knobs/gray/build/build_layer.sh 现编。
 # 每组结束 (含 Ctrl-C) 删回三项 GPU 调试设置、清 debug.knobs.*。输出: <目录>/report.md + *_cmp.png
 set -eu
-S=${1:?用法: sh loop_v1/selfsr/repro_noroot.sh <serial> [轮数] [输出目录]}
+S=${1:?用法: sh selfsr/repro_noroot.sh <serial> [轮数] [输出目录]}
 N=${2:-3}; OUTD=${3:-repro_noroot_${S}_$(date +%m%d%H%M)}
-HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
-SO=$ROOT/knobs/gray/build/out/libVkLayer_refknobs.so
-[ -f "$SO" ] || { echo "先编层: bash knobs/gray/build/build_layer.sh"; exit 1; }
+HERE=$(cd "$(dirname "$0")" && pwd); ROOT=${PF_ROOT:-$(cd "$HERE/../.." && pwd)}
+LAYER="$HERE/gray"; [ -d "$LAYER" ] || LAYER="$ROOT/knobs/gray"
+SO=$LAYER/build/out/libVkLayer_refknobs.so
+[ -f "$SO" ] || { echo "先编层: bash $LAYER/build/build_layer.sh"; exit 1; }
 mkdir -p "$OUTD"; OUTD=$(cd "$OUTD" && pwd)
 adb -s "$S" shell 'svc power stayon usb; input keyevent KEYCODE_WAKEUP'
 trap 'adb -s "$S" shell svc power stayon false' EXIT

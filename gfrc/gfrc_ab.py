@@ -19,7 +19,8 @@
 """
 import argparse, itertools, json, os, random, re, shlex, signal, statistics, subprocess, sys, time
 
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# phonefarm 树：作为平台的实验任务运行时由节点给 PF_ROOT；在 phonefarm/loop_v1 老位置直接跑时回退到上两级。
+REPO = os.environ.get("PF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 KEY = "game_gfrc_mode"
 DEV_TRACE = "/data/local/tmp/gfrc_ftrace_capture.sh"
 
