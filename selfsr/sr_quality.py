@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sr_quality.py — 超分算子的离线画质: 真机原生截图当真值, 缩小再放大回来, 与真值比 SSIM 与锐度。
 
-    python3 -I loop_v1/selfsr/sr_quality.py --scale 0.7 --sharp 0.8 --out q.json <原生截图.png>...
+    python3 -I selfsr/sr_quality.py --scale 0.7 --sharp 0.8 --out q.json <原生截图.png>...
 
 跨冷启动的整屏 SSIM 被云、时辰、角色待机动作主导 (同为原生的相邻两臂只有 0.49–0.73), 判不了超分画质;
 这里在同一帧上比, 结果是确定性的。截图是屏幕分辨率 (HWC 放大后的 2688x1216), 先缩回游戏送显尺寸

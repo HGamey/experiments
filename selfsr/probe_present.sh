@@ -1,6 +1,6 @@
 #!/bin/sh
 # probe_present.sh — 只读摸清游戏怎么出图 (自研超分/插帧第 1 步): 图形接口、送显分辨率、合成路径。
-#   sh loop_v1/selfsr/probe_present.sh <serial> <输出目录> [包名]
+#   sh selfsr/probe_present.sh <serial> <输出目录> [包名]
 # 前提: 游戏已在前台 (大世界)。手机上不写任何东西。
 set -u
 S="${1:?serial}"; OUT="${2:?outdir}"; PKG="${3:-com.miHoYo.Yuanshen}"
