@@ -2,11 +2,11 @@
 # repro_noroot.sh <serial> [轮数] [输出目录] — 不 root 的手机上一键复现插帧, 出报告和对比截图。
 #   1) refbench frag_alu (可调试, 钉 60 帧): 原生 / 插帧交替  → 期望 60 → 120
 #   2) 可调试版 Megacity Metro (若已装):     原生 / 插帧交替  → 期望 30 → 60
-# 前提: refbench (REFBENCH_DEBUGGABLE=1 编) 已装; 层用 knobs/gray/build/build_layer.sh 现编。
+# 前提: refbench (REFBENCH_DEBUGGABLE=1 编) 已装; 层用本目录 gray/build/build_layer.sh 现编 (找不到 NDK 时设 ANDROID_NDK_HOME 或 REFBENCH_NDK)。
 # 每组结束 (含 Ctrl-C) 删回三项 GPU 调试设置、清 debug.knobs.*。输出: <目录>/report.md + *_cmp.png
 set -eu
 S=${1:?用法: sh selfsr/repro_noroot.sh <serial> [轮数] [输出目录]}
-N=${2:-3}; OUTD=${3:-repro_noroot_${S}_$(date +%m%d%H%M)}
+N=${2:-3}; OUTD=${3:-${PF_JOB_OUT:-.}/repro_noroot_${S}_$(date +%m%d%H%M)}
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=${PF_ROOT:-$(cd "$HERE/../.." && pwd)}
 LAYER="$HERE/gray"; [ -d "$LAYER" ] || LAYER="$ROOT/knobs/gray"
 SO=$LAYER/build/out/libVkLayer_refknobs.so

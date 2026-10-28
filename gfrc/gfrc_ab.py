@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gfrc_ab.py — 整机插帧+超分 (高通 GPP G-FRC+) 开/关的同局 A/B。不改游戏任何设置。
 
-    python3 -I loop_v1/gfrc/gfrc_ab.py --serial <S> [--pkg com.miHoYo.Yuanshen] [--rounds 6] --out <目录>
+    python3 -I gfrc/gfrc_ab.py --serial <S> [--pkg com.miHoYo.Yuanshen] [--rounds 6] --out <目录>
 
 做什么:
   1. 记下 settings global game_gfrc_mode 原值; 无论怎么退出都写回原值并回读核对。

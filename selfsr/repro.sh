@@ -1,6 +1,6 @@
 #!/bin/sh
 # 一条命令复现自研超分 + 插帧 (灰档 Vulkan 层) 对游戏的画质/帧率影响, 不改游戏内任何设置:
-#   sh loop_v1/selfsr/repro.sh <serial> [配对数, 缺省 6] [输出目录] [包名, 缺省 com.miHoYo.Yuanshen]
+#   sh selfsr/repro.sh <serial> [配对数, 缺省 6] [输出目录] [包名, 缺省 com.miHoYo.Yuanshen]
 # 依次跑 (每组都是冷启动 ABBA, 精确符号翻转检验; 整轮开机身风扇, 每臂开跑前等电池 ≤ COOL_MAX °C):
 #   1. native  vs layer                              透传层本身的开销
 #   2. native  vs sr:1:$SR_FULL                      满分辨率超分 (游戏照原生渲染, 层直接超分到屏幕分辨率)
@@ -17,7 +17,7 @@
 # 环境变量: PAN (1 = 窗口后录屏转视角量 HUD 重影) STATIC (第 11 组阈值, 0..255 色阶, 缺省 32; 层本身不设属性时也默认 32, 对比臂没写 static 的一律显式关) POWER (1 = 窗口内停充采整机功耗, 高通机) WINDOW (测量窗口秒数, 缺省 10; 量功耗建议 30) ENTER_SCRIPT (onboard 认不出时的进门脚本) KEEP_LAYER_PROP (1 = 全程保留层属性)
 #           SR_SHARP (满分辨率超分锐化, 缺省 1.0; Megacity 0) SR_FULL (本机屏幕:SR_SHARP) SR_SCALE (0.56) SR_OUT (2141x969:0.8) IP_MODE (bm) IP_FPS (120) GFRC_BUF (G-FRC+ 放大后的缓冲, 缺省 3214x1456)
 #           IP_TUNE (stamp=0,panel=120,backend=sc,lead_ns=25000000; 带 waitframe 的系统另加 ,unlimit=1,sc_name=auto; SFWAIT_OFF=1 时 ,unlimit=1,sfwait=off) COOL_MAX (42) SETS ("1 2 3 4 5 6 7 8 9")
-# 前提: 手机已 root、游戏已装好并登录过 (onboard 能进大世界)。层用 knobs/gray/build/build_layer.sh 现编。
+# 前提: 手机已 root、游戏已装好并登录过 (onboard 能进大世界)。层用本目录 gray/build/build_layer.sh 现编 (找不到 NDK 时设 ANDROID_NDK_HOME 或 REFBENCH_NDK)。
 # 每组结束 (含 Ctrl-C) 都把 Game Mode、G-FRC+ 位、debug.knobs.*、刷新率、风扇、屏幕超时写回并回读核对,
 # 层由 gray-layer session 摘除。超分算子用 Catmull-Rom + RCAS (层缺省)。
 set -eu

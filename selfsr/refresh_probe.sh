@@ -1,6 +1,6 @@
 #!/bin/sh
 # 游戏运行中每秒记一次: 厂商刷新率控制器结果、system_server 下发的刷新率范围、当前刷新率, 查「窗口后屏幕被降到 60 Hz」(STEP4 待查)。
-#   sh loop_v1/selfsr/refresh_probe.sh <serial> [秒数, 缺省 120] [点屏间隔秒, 缺省 0 = 不点] > probe.tsv
+#   sh selfsr/refresh_probe.sh <serial> [秒数, 缺省 120] [点屏间隔秒, 缺省 0 = 不点] > probe.tsv
 # 点屏点在屏幕左上角 (5%, 5%) 附近的空白处; 游戏要先进到大世界 (这个脚本不启动游戏)。
 # 输出列: 秒 控制器fps 刷新率模式 当前Hz 范围 点了没有
 set -eu
