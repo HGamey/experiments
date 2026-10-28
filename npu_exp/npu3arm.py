@@ -37,9 +37,10 @@ from n3_ui import Ui, UiStop  # noqa: E402
 import n3_judge  # noqa: E402
 
 HG = "/Users/yao/Desktop/code/agent/hgamey"
-REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+# phonefarm 树：作为平台的实验任务运行时由节点给 PF_ROOT 与 PHONEFARM_BIN；在 phonefarm/knobs/gray/npu_exp 老位置直接跑时回退到上三级。
+REPO = os.environ.get("PF_ROOT") or os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 # 缺省用本仓库的二进制与 loop_v1: 旧 worktree 的工具会改旧锁域、拆掉租约存储的退役围栏
-DEF_PF = os.environ.get("PF", f"{REPO}/src/target/release/phonefarm")
+DEF_PF = os.environ.get("PF") or os.environ.get("PHONEFARM_BIN") or f"{REPO}/src/target/release/phonefarm"
 DEF_CHAIN = os.environ.get("CHAIN", f"{REPO}/loop_v1")
 AGENT = "/Users/yao/Desktop/code/agent"
 # N1 交付的构建产物 (R2F 修订版, 本地文件名带版本号; 推到手机上固定叫 LAYER_SO)
@@ -703,7 +704,8 @@ class Exp:
 # ═══════════════════════════ 子命令 ═══════════════════════════
 
 def new_out(a, mode):
-    out = a.out or os.path.join(HG, "_tmp", "npu", "N3", "runs", f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}")
+    runs = os.environ.get("PF_JOB_OUT") or os.path.join(HG, "_tmp", "npu", "N3", "runs")  # 平台任务的产物目录
+    out = a.out or os.path.join(runs, f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}")
     if os.path.exists(os.path.join(out, "plan.json")) and mode not in ("restore", "judge") and not a.resume:
         sys.exit(f"{out} 已有一次运行 (不覆盖)。换 --out, 或加 --resume 续跑")
     os.makedirs(out, exist_ok=True)
