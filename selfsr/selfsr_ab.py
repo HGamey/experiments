@@ -578,7 +578,9 @@ def hold_probe(dev, a, name, out, k):
         ctrl, mode, mper, active, rng = (v.strip() for v in vals[:5])
         m = re.search(r"\(([0-9.]+) fps\)", mper)
         hz = float(m.group(1)) if m else (float(active) if active.replace(".", "", 1).isdigit() else None)
-        ok = (hz is not None and panel and abs(hz - float(panel)) <= 3) or None
+        ok = None
+        if hz is not None and panel:
+            ok = abs(hz - float(panel)) <= 3   # True/False; None = 这秒没读到刷新率 (P1 实测教训: 不能用 x or None, False 会被塌成 None)
         if ok is not None:
             if not ok and last_ok:
                 drops.append(i)   # 一次连续掉落记一次 (开始时刻)
@@ -589,9 +591,9 @@ def hold_probe(dev, a, name, out, k):
                 reasserts += 1
                 rea = 1
             last_ok = bool(ok)
-        bat = foc = ""
-        if i % 5 == 0:   # 电池/前台 5 秒一次就够 (掉落相关性看趋势)
-            bat = " ".join((dev.shell("dumpsys battery | grep -E 'status:|level:|temperature:' | tr '\\n' ' '", timeout=30) or "").split())[:90]
+        bat = " ".join((dev.shell("dumpsys battery | grep -E 'status:|level:|temperature:' | tr '\\n' ' '", timeout=30) or "").split())[:90]   # 电池温度是掉落假设核心变量, 每秒采
+        foc = ""
+        if i % 5 == 0:   # 前台 5 秒一次就够
             foc = (dev.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity'", timeout=30) or "").strip()[-90:]
         rows.append("\t".join([time.strftime("%H:%M:%S"), str(i), ctrl, mode, mper, active, rng, bat, foc,
                                str(tapped), str(rea), "" if ok is None else str(int(bool(ok)))]))
@@ -697,6 +699,13 @@ def arm_layer(a, out, name, k, note, locked):
             rec["error"] = f"会话在测量前已结束 (phase={s.get('phase')}, stop={s.get('stop_reason')})"
             return rec
 
+        def marker():
+            m = session_action(a.phonefarm, sdir, "marker")
+            try:
+                return json.load(open(os.path.join(sdir, m["result"]["path"])))
+            except Exception:
+                return {}
+
         if getattr(a, "hold", 0) > 0:   # hold 探测: 不开测量窗口, 每秒采样刷新率 (查 120→60 掉落); finally 照常摘层
             rec.update(hold_probe(dev, a, name, out, k))
             m1 = marker()
@@ -708,12 +717,6 @@ def arm_layer(a, out, name, k, note, locked):
                     rec["error"] = f"层没在超分 (selfsr={rec['selfsr']})"
             return rec
 
-        def marker():
-            m = session_action(a.phonefarm, sdir, "marker")
-            try:
-                return json.load(open(os.path.join(sdir, m["result"]["path"])))
-            except Exception:
-                return {}
         m0 = marker()
         csv0 = interp_csv_size(dev, a) if k["kind"] in ("ip", "srip") else 0
         t0 = uptime_ns(dev)
