@@ -15,11 +15,14 @@ i=0
 while [ "$i" -lt "$DUR" ]; do
   tapped=0
   if [ "$TAP" -gt 0 ] && [ $((i % TAP)) -eq 0 ] && [ "$i" -gt 0 ]; then adb -s "$S" shell input tap "$X" "$Y"; tapped=1; fi
+  # 控制器结果在 global 里 (system 里没有这个键); 范围取 SF 收到的 displayManagerPolicy:
+  # 厂商控制器绕过 DisplayModeDirector 直接给 SF 下单一刷新率, dumpsys display 里的 desired specs 一直是 0–240 (2026-10-28 实测)
   adb -s "$S" shell '
-    c=$(settings get system ScreenRefreshRateController_resultFps)
+    c=$(settings get global ScreenRefreshRateController_resultFps)
     m=$(settings get system refresh_rate_mode)
-    hz=$(dumpsys SurfaceFlinger | grep -m1 -o "activeMode={[^}]*vsyncRate=[0-9.]*" | grep -o "[0-9.]*$")
-    r=$(dumpsys display | grep -m1 -o "primary=\[[^]]*\]" )
+    sf=$(dumpsys SurfaceFlinger --displays 2>/dev/null)
+    hz=$(echo "$sf" | grep -m1 -o "activeMode={[^}]*vsyncRate=[0-9.]*" | grep -o "[0-9.]*$")
+    r=$(echo "$sf" | grep -m1 -o "primaryRanges={physical=\[[^]]*\]" | sed "s/.*\[//; s/\]//; s/ Hz//g")
     printf "%s\t%s\t%s\t%s" "$c" "$m" "$hz" "$r"' | tr -d '\r' | awk -v t="$i" -v k="$tapped" '{print t "\t" $0 "\t" k}'
   i=$((i + 1))
   sleep 1

@@ -340,14 +340,31 @@ def uptime_ns(dev):
         return None
 
 
-def interp_window(dev, a, name, out, t0, t1):
-    """层的 knobs_interp_frames.csv 里 [t0, t1] 内实际上屏的帧: 每秒几张真实帧 / 合成帧, 上屏间隔。"""
+def interp_csv_path(pkg):
+    return f"/storage/emulated/0/Android/data/{pkg}/files/knobs_interp_frames.csv"
+
+
+def interp_csv_size(dev, a):
+    """CSV 只追加不截断, 子图层后端 (backend=sc) 也不往里写: 窗口前记下大小, 窗口后只读这之后追加的行,
+    否则读到的是以前某次运行的尾巴 (2026-10-28 第 7 组每个插帧臂都拿到同一段旧数据)。"""
+    s = dev.su(f"stat -c %s {shlex.quote(interp_csv_path(a.pkg))}").strip()
+    return int(s) if s.isdigit() else 0
+
+
+def interp_window(dev, a, name, out, t0, t1, since=0):
+    """层的 knobs_interp_frames.csv 里 [t0, t1] 内实际上屏的帧: 每秒几张真实帧 / 合成帧, 上屏间隔。
+    since: 窗口开始前 CSV 的字节数 (interp_csv_size), 只看这之后追加的行。"""
     import statistics as st
-    path = f"/storage/emulated/0/Android/data/{a.pkg}/files/knobs_interp_frames.csv"
+    path = interp_csv_path(a.pkg)
     local = os.path.join(out, "traces", f"{name}_interp.csv")
     dev.adb(f"exec-out su -c {shlex.quote('cat ' + path)} > {shlex.quote(local)}")
+    data = open(local, "rb").read()
+    if len(data) < since:   # 文件被换过, 整个都是新的
+        since = 0
+    if len(data) == since:
+        return {"status": "no_new_rows", "csv_bytes": len(data)}
     rows = []
-    for ln in open(local, errors="replace"):
+    for ln in data[since:].decode(errors="replace").splitlines():
         f = ln.strip().split(",")
         if len(f) >= 8 and f[0] == "timing":
             try:
@@ -605,6 +622,7 @@ def arm_layer(a, out, name, k, note, locked):
             except Exception:
                 return {}
         m0 = marker()
+        csv0 = interp_csv_size(dev, a) if k["kind"] in ("ip", "srip") else 0
         t0 = uptime_ns(dev)
         rec.update(measure(dev, a, name, out))
         t1 = uptime_ns(dev)
@@ -616,7 +634,7 @@ def arm_layer(a, out, name, k, note, locked):
                 rec["error"] = f"测量窗口内屏幕没保持 {panel} Hz: 结束时 {per.strip()}, timestats {rec.get('display_hz')} Hz"
         m1 = marker()
         if k["kind"] in ("ip", "srip"):   # 窗口内层回读的实际上屏 (会话累计的环形统计混着加载期, 不可用)
-            rec["interp_window"] = interp_window(dev, a, name, out, t0, t1)
+            rec["interp_window"] = interp_window(dev, a, name, out, t0, t1, since=csv0)
             iw = rec["interp_window"]
             rec["displayed_per_s"] = iw.get("displayed_per_s")
         rec["layer_loaded"] = bool(m0.get("layer_loaded") and m1.get("layer_loaded"))
