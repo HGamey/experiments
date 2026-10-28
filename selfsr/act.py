@@ -7,7 +7,9 @@ PF = os.environ.get("PHONEFARM_BIN") or os.path.join(os.environ.get("PF_ROOT") o
 out, action = sys.argv[1], sys.argv[2]
 params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
 def pf(*a, inp=None):
-    r = subprocess.run([PF, "gray-layer", *a], input=inp, capture_output=True, text=True)
+    # 与 selfsr_ab.py 一样按独立会话说话 (平台任务里的 PF_JOB_* 不传给 gray-layer)
+    env = {k: v for k, v in os.environ.items() if k not in ("PF_JOB_ID", "PF_JOB_OUT", "PF_JOB_LEASE_DIR")}
+    r = subprocess.run([PF, "gray-layer", *a], input=inp, capture_output=True, text=True, env=env)
     try: return r.returncode, json.loads(r.stdout)
     except Exception: return r.returncode, {"raw": r.stdout, "err": r.stderr}
 _, d = pf("session-status", "--out", out, "--json")

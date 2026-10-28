@@ -92,8 +92,13 @@ def uses_layer(k):
     return k["kind"] in ("layer", "sr", "ip", "srip")
 
 
+# 挂层会话按独立会话跑: 平台任务里 phonefarm 把带 PF_JOB_ID/PF_JOB_OUT 的会话当节点会话, 要求 --out 就是任务输出目录,
+# 而这里每臂一个会话目录。设备仍由会话的租约保护, 还原由每臂和收尾的核对负责 (restore.json)。
+SESSION_ENV = {k: v for k, v in os.environ.items() if k not in ("PF_JOB_ID", "PF_JOB_OUT", "PF_JOB_LEASE_DIR")}
+
+
 def pf_json(pf, *args, inp=None, timeout=600):
-    r = subprocess.run([pf, *args], input=inp, capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run([pf, *args], input=inp, capture_output=True, text=True, timeout=timeout, env=SESSION_ENV)
     try:
         return r.returncode, json.loads(r.stdout)
     except ValueError:
@@ -533,7 +538,7 @@ def arm_layer(a, out, name, k, note, locked):
         cmd += ["--so", a.so]
     if a.keep_layer_prop:
         cmd += ["--keep-prop"]
-    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=SESSION_ENV)
     st = None
     try:
         phase = None
