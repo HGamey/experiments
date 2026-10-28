@@ -521,6 +521,25 @@ def prepare(a, k, orig_mode):
     return {"game_mode": gm, "selfsr_prop": dev.prop(SR_PROP), "interp_props": [dev.prop(p) for p in IP_PROPS]}
 
 
+def batt_temp_c(dev):
+    try:
+        return int(re.search(r"temperature: (\d+)", dev.shell("dumpsys battery")).group(1)) / 10
+    except (AttributeError, ValueError):
+        return None
+
+
+def wait_batt_temp(dev, want_c, rising, max_s=1200):
+    """等电池温度到达 want_c (rising=True 等升到, False 等降到), 每 5 秒读一次, 超时返回最后的温度。"""
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < max_s:
+        last = batt_temp_c(dev)
+        if last is not None and (last >= want_c if rising else last <= want_c):
+            break
+        time.sleep(5)
+    return last
+
+
 # 进世界后设屏幕刷新率 (红魔 refresh_rate_mode), 回读 SF 周期确认; arm_layer 与 hold 探测共用。返回错误文本或 None
 def set_panel(dev, k, rec):
     panel = str((k.get("tune") or {}).get("panel"))
@@ -672,6 +691,11 @@ def arm_layer(a, out, name, k, note, locked):
             rec["error"] = err
             return rec
         panel = (k.get("tune") or {}).get("panel")
+        if panel and getattr(a, "hold", 0) > 0:
+            warm = float(os.environ.get("HOLD_WARM") or 0)
+            if warm > 0:   # 探测: 掉落发生在电池温度向上穿过 ~43°C 时 — 等穿过后再设 panel, 避开穿越事件本身
+                t_c = wait_batt_temp(dev, warm, rising=True, max_s=900)
+                rec["warm_wait_c"] = t_c
         if panel:   # 进世界后设刷新率 (红魔 refresh_rate_mode), 回读 SF 刷新周期确认 (set_panel)
             err = set_panel(dev, k, rec)
             if err:
@@ -877,6 +901,22 @@ def cmd_hold(a, out):
                 os.environ["HOLD_PANEL"] = str(opts["panel"])
             else:
                 os.environ.pop("HOLD_PANEL", None)
+            if opts.get("warm"):
+                os.environ["HOLD_WARM"] = str(opts["warm"])
+            else:
+                os.environ.pop("HOLD_WARM", None)
+            if opts.get("cool"):   # 阶段前等电池降到 N °C (制造「即将向上穿越 43°C」的条件; 最多 20 分钟)
+                cm = float(opts["cool"])
+                dev.shell(f"am force-stop {a.pkg}; input keyevent KEYCODE_SLEEP")
+                waited = 0
+                for _ in range(120):
+                    t_c = batt_temp_c(dev)
+                    if t_c is None or t_c <= cm:
+                        break
+                    time.sleep(10)
+                    waited += 10
+                dev.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")
+                note(f"{name}: 等降温 {waited}s (电池到 {batt_temp_c(dev)}°C, 目标 ≤ {cm}°C)")
             dev.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")
             note(f"{name}: {spec} hold={a.hold}s tap={os.environ['HOLD_TAP']}s reassert={os.environ['HOLD_REASSERT']}"
                  + (f" panel={os.environ['HOLD_PANEL']}" if os.environ.get("HOLD_PANEL") else ""))
