@@ -21,7 +21,17 @@
 # 每组结束 (含 Ctrl-C) 都把 Game Mode、G-FRC+ 位、debug.knobs.*、刷新率、风扇、屏幕超时写回并回读核对,
 # 层由 gray-layer session 摘除。超分算子用 Catmull-Rom + RCAS (层缺省)。
 set -eu
-SERIAL="${1:?用法: sh selfsr/repro.sh <serial> [配对数] [输出目录] [包名]}"
+# 平台任务里设不了环境变量: 参数里写成 KEY=VALUE 的上面这些变量照环境变量用, 如 `repro.sh <serial> 6 SETS=7 WINDOW=60`
+n=$#
+for arg in "$@"; do
+  case $arg in
+    PAN=*|STATIC=*|POWER=*|WINDOW=*|ENTER_SCRIPT=*|KEEP_LAYER_PROP=*|SR_SHARP=*|SR_FULL=*|SR_SCALE=*|SR_OUT=*|IP_MODE=*|IP_FPS=*|GFRC_BUF=*|IP_TUNE=*|COOL_MAX=*|SETS=*|SFWAIT_OFF=*)
+      export "$arg" ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+shift "$n"
+SERIAL="${1:?用法: sh selfsr/repro.sh <serial> [配对数] [输出目录] [包名] [KEY=VALUE ...]}"
 ROUNDS="${2:-6}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 # phonefarm 树：平台实验任务里是节点给的 PF_ROOT；在 phonefarm/loop_v1 老位置直接跑时回退到上两级。
