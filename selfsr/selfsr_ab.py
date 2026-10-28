@@ -521,6 +521,86 @@ def prepare(a, k, orig_mode):
     return {"game_mode": gm, "selfsr_prop": dev.prop(SR_PROP), "interp_props": [dev.prop(p) for p in IP_PROPS]}
 
 
+# 进世界后设屏幕刷新率 (红魔 refresh_rate_mode), 回读 SF 周期确认; arm_layer 与 hold 探测共用。返回错误文本或 None
+def set_panel(dev, k, rec):
+    panel = str((k.get("tune") or {}).get("panel"))
+    want = str(PANEL_MODE[panel])
+    if dev.shell("settings get system refresh_rate_mode").strip() == want:
+        # 值没变 settings 不发变更通知, 屏幕停在游戏自己要的刷新率 (残留原值时真机 60 Hz): 先写 0 再写目标
+        dev.shell("settings put system refresh_rate_mode 0")
+        time.sleep(1)
+    dev.shell(f"settings put system refresh_rate_mode {want}")
+    time.sleep(4)
+    per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
+    rec["panel_period"] = per.strip()
+    m = re.search(r"\(([0-9.]+) fps\)", per)
+    if not m or abs(float(m.group(1)) - float(panel)) > 3:
+        return f"屏幕没切到 {panel} Hz: {per.strip()}"
+    return None
+
+
+def hold_probe(dev, a, name, out, k):
+    """探测模式 (--hold N): 进世界/设好刷新率后不开测量窗口, 每秒采样厂商控制器结果、SF 周期/范围、电池与前台,
+    查「测量窗口内屏幕被压回 60 Hz」的触发条件与对抗手段 (作废的 6 对 srip 臂都是这个现象)。
+    环境变量 (按阶段设, 平台任务里传不进环境就用这个):
+      HOLD_TAP=<秒>    每 N 秒在屏幕右侧空白点一下 (测输入事件是否阻止降档; 坐标自动取当前横屏右侧中点)
+      HOLD_REASSERT=1  屏幕掉离目标刷新率时重设 refresh_rate_mode 0→目标 (测重设能不能守住、能守多久)
+    每秒一行写 traces/<名>_hold.tsv (中断也保住已采的); 返回汇总进 arms.jsonl。"""
+    panel = str((k.get("tune") or {}).get("panel") or "")
+    target = str(PANEL_MODE[panel]) if panel in PANEL_MODE else None
+    tap_every = int(os.environ.get("HOLD_TAP") or 0)
+    reassert = os.environ.get("HOLD_REASSERT") == "1"
+    tap_x = tap_y = 0
+    if tap_every:   # 点屏坐标: 当前显示方向的右侧中点 (原神 HUD 空白处, 单击不放技能不转视角)
+        m = re.search(r" cur=(\d+)x(\d+)", dev.shell("dumpsys window displays | grep -m1 ' cur='") or "")
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+            tap_x, tap_y = (int(w * 0.92), int(h * 0.5)) if w > h else (int(w * 0.5), int(h * 0.92))
+    # 一次 adb 采全: 控制器结果在 global (system 里没有); 范围取 SF 收到的 primaryRanges (refresh_probe.sh 同源)
+    sample = ('c=$(settings get global ScreenRefreshRateController_resultFps); '
+              'm=$(settings get system refresh_rate_mode); '
+              'p=$(dumpsys SurfaceFlinger 2>/dev/null | grep -m1 mPeriod); '
+              'd=$(dumpsys SurfaceFlinger --displays 2>/dev/null); '
+              'hz=$(echo "$d" | grep -m1 -o "activeMode={[^}]*vsyncRate=[0-9.]*" | grep -o "[0-9.]*$"); '
+              'r=$(echo "$d" | grep -m1 -o "primaryRanges={physical=\\[[^]]*\\]" | sed "s/.*\\[//; s/\\]//; s/ Hz//g"); '
+              'printf "%s|%s|%s|%s|%s\\n" "$c" "$m" "$p" "$hz" "$r"')
+    tsv = os.path.join(out, "traces", f"{name}_hold.tsv")
+    rows = ["wall\tt\tctrl_fps\tmode\tmperiod\tactive_hz\trange\tbat\tfocus\ttap\treassert\tok"]
+    drops, reasserts = [], 0
+    last_ok, hz, ctrl = True, None, ""
+    for i in range(int(a.hold)):
+        tapped = rea = 0
+        if tap_every and i > 0 and i % tap_every == 0:
+            dev.shell(f"input tap {tap_x} {tap_y}")
+            tapped = 1
+        vals = (dev.shell(sample, timeout=30) or "").strip().split("|")
+        vals += [""] * (5 - len(vals))
+        ctrl, mode, mper, active, rng = (v.strip() for v in vals[:5])
+        m = re.search(r"\(([0-9.]+) fps\)", mper)
+        hz = float(m.group(1)) if m else (float(active) if active.replace(".", "", 1).isdigit() else None)
+        ok = (hz is not None and panel and abs(hz - float(panel)) <= 3) or None
+        if ok is not None:
+            if not ok and last_ok:
+                drops.append(i)   # 一次连续掉落记一次 (开始时刻)
+            if not ok and reassert and target:
+                dev.shell("settings put system refresh_rate_mode 0")
+                time.sleep(0.5)
+                dev.shell(f"settings put system refresh_rate_mode {target}")
+                reasserts += 1
+                rea = 1
+            last_ok = bool(ok)
+        bat = foc = ""
+        if i % 5 == 0:   # 电池/前台 5 秒一次就够 (掉落相关性看趋势)
+            bat = " ".join((dev.shell("dumpsys battery | grep -E 'status:|level:|temperature:' | tr '\\n' ' '", timeout=30) or "").split())[:90]
+            foc = (dev.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity'", timeout=30) or "").strip()[-90:]
+        rows.append("\t".join([time.strftime("%H:%M:%S"), str(i), ctrl, mode, mper, active, rng, bat, foc,
+                               str(tapped), str(rea), "" if ok is None else str(int(bool(ok)))]))
+        open(tsv, "w").write("\n".join(rows) + "\n")
+        time.sleep(1)
+    return {"hold_s": a.hold, "panel": panel or None, "hold_drops_at_s": drops, "hold_reasserts": reasserts,
+            "hold_end_hz": hz, "hold_end_ctrl": ctrl}
+
+
 def arm_plain(a, out, name, k, orig_mode):
     """不挂层的臂 (整臂在 devlock 下被调用)。"""
     dev = Dev(a.serial)
@@ -533,8 +613,19 @@ def arm_plain(a, out, name, k, orig_mode):
     if err:
         rec["error"] = err
         return rec
+    if getattr(a, "hold", 0) > 0:   # hold 探测: 无层臂也可用 HOLD_PANEL=120 指定刷新率 (对照: 掉落和层有没有关)
+        hp = os.environ.get("HOLD_PANEL", "")
+        if hp and not (k.get("tune") or {}).get("panel"):
+            k = {**k, "tune": {**(k.get("tune") or {}), "panel": hp}}
+            err = set_panel(dev, k, rec)
+            if err:
+                rec["error"] = err
+                return rec
     time.sleep(a.settle)
-    rec.update(measure(dev, a, name, out))
+    if getattr(a, "hold", 0) > 0:
+        rec.update(hold_probe(dev, a, name, out, k))
+    else:
+        rec.update(measure(dev, a, name, out))
     dev.shell(f"am force-stop {a.pkg}")
     return rec
 
@@ -579,19 +670,10 @@ def arm_layer(a, out, name, k, note, locked):
             rec["error"] = err
             return rec
         panel = (k.get("tune") or {}).get("panel")
-        if panel:   # 进世界后再设刷新率 (红魔 refresh_rate_mode), 回读 SF 刷新周期确认
-            want = str(PANEL_MODE[str(panel)])
-            if dev.shell("settings get system refresh_rate_mode").strip() == want:
-                # 值没变 settings 不发变更通知, 屏幕停在游戏自己要的刷新率 (残留原值时真机 60 Hz): 先写 0 再写目标
-                dev.shell("settings put system refresh_rate_mode 0")
-                time.sleep(1)
-            dev.shell(f"settings put system refresh_rate_mode {want}")
-            time.sleep(4)
-            per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
-            rec["panel_period"] = per.strip()
-            m = re.search(r"\(([0-9.]+) fps\)", per)
-            if not m or abs(float(m.group(1)) - float(panel)) > 3:
-                rec["error"] = f"屏幕没切到 {panel} Hz: {per.strip()}"
+        if panel:   # 进世界后设刷新率 (红魔 refresh_rate_mode), 回读 SF 刷新周期确认 (set_panel)
+            err = set_panel(dev, k, rec)
+            if err:
+                rec["error"] = err
                 return rec
         fpv = (k.get("tune") or {}).get("framepacing")
         if fpv is not None:   # 进世界后设高通帧节奏开关, 回读核对
@@ -613,6 +695,17 @@ def arm_layer(a, out, name, k, note, locked):
         code, s = pf_json(a.phonefarm, "gray-layer", "session-status", "--out", sdir, "--json")
         if proc.poll() is not None or s.get("phase") != "ready":
             rec["error"] = f"会话在测量前已结束 (phase={s.get('phase')}, stop={s.get('stop_reason')})"
+            return rec
+
+        if getattr(a, "hold", 0) > 0:   # hold 探测: 不开测量窗口, 每秒采样刷新率 (查 120→60 掉落); finally 照常摘层
+            rec.update(hold_probe(dev, a, name, out, k))
+            m1 = marker()
+            rec["layer_loaded"] = bool(m1.get("layer_loaded"))
+            rec["unlimit"] = m1.get("unlimit")
+            if k["kind"] in ("sr", "srip"):
+                rec["selfsr"] = m1.get("selfsr") or {}
+                if (rec["selfsr"].get("upscaled") or 0) <= 0:
+                    rec["error"] = f"层没在超分 (selfsr={rec['selfsr']})"
             return rec
 
         def marker():
@@ -679,9 +772,143 @@ def arm_layer(a, out, name, k, note, locked):
     return rec
 
 
+def make_locked(a, out, orig_mode):
+    """devlock 下调本脚本 _locked (prep/plain/restore); run 与 hold 共用。
+    标签带序列号「<标签>@<序列号>」: 看板与远程调试据此只把这一台当作测量中 (harness-ops 的约定)。"""
+    def locked(what, name, k_str):
+        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"{LOCK_PREFIX}selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
+               os.path.abspath(__file__), "_locked", "--what", what, "--name", name, "--kind", k_str,
+               "--orig-mode", orig_mode, "--serial", a.serial, "--pkg", a.pkg, "--out", out,
+               "--settle", str(a.settle), "--window", str(a.window), "--phonefarm", a.phonefarm]
+        if getattr(a, "hold", 0) > 0:   # hold 探测: 无层臂的 arm_plain 在 _locked 子进程里跑, 要把 --hold 带过去
+            cmd += ["--hold", str(a.hold)]
+        if a.power:
+            cmd += ["--power"]
+        if a.pan:
+            cmd += ["--pan"]
+        if a.enter_script:
+            cmd += ["--enter-script", a.enter_script]
+        r = None
+        for _ in range(90):   # devlock run 轮不到时立即返回 1 (不等), 有界重试
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                               env={**os.environ, "PHONEFARM_BIN": a.phonefarm})
+            if r.returncode == 0 or not any(s in r.stderr for s in ("not your turn", "busy:")):
+                break
+            time.sleep(10)
+        line = next((l for l in r.stdout.splitlines() if l.startswith("ARM_JSON ")), None)
+        return json.loads(line[9:]) if line else {"error": f"{what} exit {r.returncode}: {r.stderr[-400:]}"}
+    return locked
+
+
+def cmd_hold(a, out):
+    """hold: 逐阶段复现「设好的 120 Hz 被系统压回 60」, 每秒采样 (hold_probe) 找触发条件/对抗手段, 不进统计。
+    阶段 --phases 分号分隔: <臂>|panel=120|tap=<秒>|reassert=1|hold=<秒>; 臂写法同 --a/--b。"""
+    log = open(os.path.join(out, "run.log"), "a")
+
+    def note(msg):
+        line = f"{time.strftime('%H:%M:%S')} {msg}"
+        print(line, flush=True)
+        log.write(line + "\n")
+        log.flush()
+
+    phases = []
+    for ph in (a.phases or "").split(";"):
+        ph = ph.strip()
+        if not ph:
+            continue
+        parts = ph.split("|")
+        spec, opts = parts[0], dict(kv.split("=", 1) for kv in parts[1:] if "=" in kv)
+        try:
+            parse_kind(spec)
+        except argparse.ArgumentTypeError as e:
+            note(f"阶段写法不认识: {e}")
+            return 2
+        phases.append((spec, opts))
+    if not phases:
+        note("没有可用阶段 (--phases)")
+        return 2
+
+    dev = Dev(a.serial)
+    ok, info = layer_absent(dev, a.pkg)
+    if not ok:
+        note(f"开跑前设备上已有层残留, 拒绝开始: {info}")
+        return 2
+    orig_mode = current_mode(dev, a.pkg)
+    orig_cfg = dev.shell(f"cmd game list-configs {a.pkg}")
+    orig_sr = dev.prop(SR_PROP)
+    orig_timeout = dev.shell("settings get system screen_off_timeout").strip()
+    json.dump({**{key: dev.shell(f"settings get system {key}").strip() for key in PANEL_KEYS}, FP_PROP: dev.prop(FP_PROP)},
+              open(PANEL_ORIG["path"], "w"))
+    json.dump({"game_mode": orig_mode, "game_configs": orig_cfg, "selfsr_prop": orig_sr,
+               "game_gfrc_mode": dev.shell("settings get global game_gfrc_mode").strip(),
+               "screen_off_timeout": orig_timeout}, open(os.path.join(out, "orig.json"), "w"), ensure_ascii=False)
+    if "no intervention" not in orig_cfg.lower() and "downscale" in orig_cfg.lower():
+        note(f"开跑前本包已有 Game Mode 干预, 拒绝开始 (不覆盖别人的设置): {orig_cfg[-200:]}")
+        return 2
+    locked = make_locked(a, out, orig_mode)
+    FAN = "/sys/kernel/fan"
+    fan_orig = None
+    if a.fan:
+        fo = dev.su(f"cat {FAN}/fan_enable {FAN}/fan_speed_level 2>/dev/null").split()
+        if len(fo) == 2:
+            fan_orig = ("redmagic", fo[0], fo[1])
+            dev.su(f"echo 1 > {FAN}/fan_enable; echo 5 > {FAN}/fan_speed_level")
+            note(f"风扇 (红魔): 原值 enable={fo[0]} level={fo[1]}, 本轮开到 1/5")
+    dev.shell("settings put system screen_off_timeout 1800000")
+    stop = {"flag": False}
+    signal.signal(signal.SIGINT, lambda *_: stop.update(flag=True))
+    signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
+    note(f"hold 探测 {len(phases)} 阶段 (每阶段冷启动进大世界, 设好刷新率后每秒采样): {[p[0] for p in phases]}")
+    arms = []
+    try:
+        for seq, (spec, opts) in enumerate(phases):
+            if stop["flag"]:
+                note("收到中止信号, 停在这里")
+                break
+            k = parse_kind(spec)
+            name = f"P{seq + 1}"
+            a.hold = int(opts.get("hold", "120"))
+            os.environ["HOLD_TAP"] = str(opts.get("tap", "0"))
+            os.environ["HOLD_REASSERT"] = "1" if opts.get("reassert") == "1" else "0"
+            if opts.get("panel"):
+                os.environ["HOLD_PANEL"] = str(opts["panel"])
+            else:
+                os.environ.pop("HOLD_PANEL", None)
+            dev.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")
+            note(f"{name}: {spec} hold={a.hold}s tap={os.environ['HOLD_TAP']}s reassert={os.environ['HOLD_REASSERT']}"
+                 + (f" panel={os.environ['HOLD_PANEL']}" if os.environ.get("HOLD_PANEL") else ""))
+            if uses_layer(k):
+                rec = arm_layer(a, out, name, k, note, lambda w, n, _k, _s=spec: locked(w, n, _s))
+            else:
+                rec = locked("plain", name, spec)
+            rec = {"arm": name, "kind": spec, "seq": seq + 1, "opts": opts, **rec, "t": time.time()}
+            arms.append(rec)
+            open(os.path.join(out, "arms.jsonl"), "a").write(json.dumps(rec, ensure_ascii=False) + "\n")
+            if rec.get("error"):
+                note(f"{name} ({spec}): 作废 — {rec['error']}")
+            else:
+                note(f"{name} ({spec}): hold {rec.get('hold_s')}s 掉落@{rec.get('hold_drops_at_s')} "
+                     f"重设 {rec.get('hold_reasserts')} 次, 结束 {rec.get('hold_end_hz')}Hz ctrl={rec.get('hold_end_ctrl')}")
+            if uses_layer(k) and not rec.get("layer_removed", False):
+                note(f"{name}: 层没摘干净, 中止 (先人工核对再继续)")
+                break
+    finally:
+        r = locked("restore", "end", "native")
+        if fan_orig:
+            dev.su(f"echo {fan_orig[1]} > {FAN}/fan_enable; echo {fan_orig[2]} > {FAN}/fan_speed_level")
+            r["fan_restored"] = dev.su(f"cat {FAN}/fan_enable {FAN}/fan_speed_level").split()
+        dev.shell(f"settings put system screen_off_timeout {orig_timeout}")
+        ok, info = layer_absent(dev, a.pkg)
+        json.dump({**r, "layer_absent": ok, "layer_info": info}, open(os.path.join(out, "restore.json"), "w"), ensure_ascii=False)
+        note(f"收尾核对: Game Mode {r.get('mode_now')} (原 {orig_mode}), selfsr 属性 '{r.get('selfsr_prop')}', "
+             f"层已不在 {ok}, screen_off_timeout 还原为 {orig_timeout}")
+    json.dump({"phases": arms}, open(os.path.join(out, "hold_summary.json"), "w"), ensure_ascii=False, indent=1)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["run", "_locked"])
+    ap.add_argument("cmd", choices=["run", "hold", "_locked"])
     ap.add_argument("--serial", required=True)
     ap.add_argument("--pkg", default=PKG_DEFAULT)
     ap.add_argument("--out", required=True)
@@ -695,6 +922,10 @@ def main():
                     help="整个会话保留 debug.vulkan.layers (Unity 先建一个探测用 VkInstance、再建真正的那种游戏需要; 原神不需要)")
     ap.add_argument("--settle", type=float, default=20)
     ap.add_argument("--window", type=int, default=10)
+    ap.add_argument("--hold", type=int, default=0,
+                    help="探测模式: 每臂不开测量窗口, 改为每秒采样刷新率 N 秒, 查「120 Hz 窗口内被压回 60」的触发 (hold_probe)")
+    ap.add_argument("--phases", default=None,
+                    help="hold 模式的阶段列表, 分号分隔: <臂>|panel=120|tap=<秒>|reassert=1|hold=<秒>; 臂写法同 --a/--b")
     ap.add_argument("--session-seconds", type=int, default=1200)
     ap.add_argument("--cool-max", type=float, default=0, help="每臂开跑前电池温度要降到这个 °C 以下 (0 = 不等), 最多等 15 分钟")
     ap.add_argument("--fan", action="store_true", help="整轮开机身风扇最高档 (红魔 /sys/kernel/fan), 收尾写回原值; 没有该节点的机器跳过")
@@ -744,6 +975,9 @@ def main():
         print("ARM_JSON " + json.dumps(rec, ensure_ascii=False))
         return 0
 
+    if a.cmd == "hold":
+        return cmd_hold(a, out)
+
     log = open(os.path.join(out, "run.log"), "a")
 
     def note(msg):
@@ -755,28 +989,6 @@ def main():
     raw = sys.argv
     ka = raw[raw.index("--a") + 1] if "--a" in raw else "native"
     kb = raw[raw.index("--b") + 1] if "--b" in raw else "layer"
-
-    def locked(what, name, k_str):
-        # 标签带序列号「<标签>@<序列号>」: 看板与远程调试据此只把这一台当作测量中 (harness-ops 的约定)
-        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"{LOCK_PREFIX}selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
-               os.path.abspath(__file__), "_locked", "--what", what, "--name", name, "--kind", k_str,
-               "--orig-mode", orig_mode, "--serial", a.serial, "--pkg", a.pkg, "--out", out,
-               "--settle", str(a.settle), "--window", str(a.window), "--phonefarm", a.phonefarm]
-        if a.power:
-            cmd += ["--power"]
-        if a.pan:
-            cmd += ["--pan"]
-        if a.enter_script:
-            cmd += ["--enter-script", a.enter_script]
-        r = None
-        for _ in range(90):   # devlock run 轮不到时立即返回 1 (不等), 有界重试
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                               env={**os.environ, "PHONEFARM_BIN": a.phonefarm})
-            if r.returncode == 0 or not any(s in r.stderr for s in ("not your turn", "busy:")):
-                break
-            time.sleep(10)
-        line = next((l for l in r.stdout.splitlines() if l.startswith("ARM_JSON ")), None)
-        return json.loads(line[9:]) if line else {"error": f"{what} exit {r.returncode}: {r.stderr[-400:]}"}
 
     dev = Dev(a.serial)
     ok, info = layer_absent(dev, a.pkg)
@@ -792,6 +1004,7 @@ def main():
     json.dump({"game_mode": orig_mode, "game_configs": orig_cfg, "selfsr_prop": orig_sr,
                "game_gfrc_mode": dev.shell("settings get global game_gfrc_mode").strip(),
                "screen_off_timeout": orig_timeout}, open(os.path.join(out, "orig.json"), "w"), ensure_ascii=False)
+    locked = make_locked(a, out, orig_mode)
     if "no intervention" not in orig_cfg.lower() and "downscale" in orig_cfg.lower():
         note(f"开跑前本包已有 Game Mode 干预, 拒绝开始 (不覆盖别人的设置): {orig_cfg[-200:]}")
         return 2
