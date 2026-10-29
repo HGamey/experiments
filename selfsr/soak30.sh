@@ -107,13 +107,14 @@ for r in rows:
 for f in sorted(glob.glob(f"{out}/traces/P*_hold.tsv")):
     res["hold_tsv"] = os.path.basename(f)
     buckets, cur = [], None
-    dips = reasserts = fg_game_samples = focus_samples = total_s = 0
+    dips = reasserts = fg_game_samples = focus_samples = sample_rows = coverage_s = 0
     temps, hzs = [], []
     for line in open(f):
         p = line.rstrip('\n').split('\t')
         if p[0] == 'wall': continue
-        total_s += 1
-        t = int(p[1]); hz = float(p[5]) if p[5] else 0.0
+        sample_rows += 1
+        t = int(p[1]); coverage_s = max(coverage_s, t + 1)
+        hz = float(p[5]) if p[5] else 0.0
         m = re.search(r'temperature: (\d+)', p[7]); tc2 = int(m.group(1))/10 if m else None
         if len(p) > 8 and p[8]:
             focus_samples += 1
@@ -134,13 +135,14 @@ for f in sorted(glob.glob(f"{out}/traces/P*_hold.tsv")):
         c['hz_min'] = None if c['hz_min'] == 999 else c['hz_min']
         c['temp_mean'] = round(c['t_sum']/c['t_n'], 1) if c['t_n'] else None
         for k in ('hz_sum','hz_n','t_sum','t_n'): del c[k]
-    res.update({'total_s': total_s, 'fg_game_samples': fg_game_samples, 'focus_samples': focus_samples,
+    res.update({'total_s': coverage_s, 'sample_rows': sample_rows,
+                'fg_game_samples': fg_game_samples, 'focus_samples': focus_samples,
                 'dip_seconds': dips, 'reassert_events': reasserts,
                 'temp_min': min(temps) if temps else None, 'temp_max': max(temps) if temps else None,
                 'hz_min': min(hzs) if hzs else None, 'hz_mean': round(sum(hzs)/len(hzs), 2) if hzs else None,
                 'minutes': buckets})
     reasons = []
-    if total_s < 1700: reasons.append(f"采样不足({total_s}s)")
+    if coverage_s < 1700: reasons.append(f"墙钟覆盖不足({coverage_s}s, {sample_rows}行)")
     # gfxinfo 对 Vulkan 渲染不可见、focus 是 5 秒稀疏采样，均不能用来否定整轮。
     # 有效性只看采样覆盖和 arms 的会话/层校验；任何臂错误都保留并判无效。
     arms_path = os.path.join(out, "arms.jsonl")

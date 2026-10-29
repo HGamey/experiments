@@ -588,11 +588,20 @@ def hold_probe(dev, a, name, out, k):
     drops, reasserts = [], 0
     last_ok, hz, ctrl = True, None, ""
     fg_lost_since = None
-    for i in range(int(a.hold)):
+    started = time.monotonic()
+    next_tap = tap_every
+    next_focus = 0.0
+    while True:
+        iter_started = time.monotonic()
+        elapsed = iter_started - started
+        if elapsed >= float(a.hold):
+            break
+        i = int(elapsed)   # TSV 的 t 是实际经过秒数；采样慢于 1s 时不再把循环次数误当墙钟
         tapped = rea = 0
-        if tap_every and i > 0 and i % tap_every == 0:
+        if tap_every and elapsed >= next_tap:
             dev.shell(f"input tap {tap_x} {tap_y}")
             tapped = 1
+            next_tap += tap_every
         vals = (dev.shell(sample, timeout=30) or "").strip().split("|")
         vals += [""] * (5 - len(vals))
         ctrl, mode, mper, active, rng = (v.strip() for v in vals[:5])
@@ -613,7 +622,8 @@ def hold_probe(dev, a, name, out, k):
             last_ok = bool(ok)
         bat = " ".join((dev.shell("dumpsys battery | grep -E 'status:|level:|temperature:' | tr '\\n' ' '", timeout=30) or "").split())[:90]   # 电池温度是掉落假设核心变量, 每秒采
         foc = ""
-        if i % 5 == 0:   # 前台 5 秒一次就够
+        if elapsed >= next_focus:   # 前台约 5 秒一次
+            next_focus += 5
             foc = (dev.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity'", timeout=30) or "").strip()[-90:]
             if os.environ.get("HOLD_REQUIRE_FG") == "1":
                 if a.pkg not in foc:
@@ -622,16 +632,20 @@ def hold_probe(dev, a, name, out, k):
                     elif i - fg_lost_since >= 60:
                         # 长采样若已离开游戏，后续面板读数不能冒充挂层游戏数据；保留已采 TSV 并判无效。
                         open(tsv, "w").write("\n".join(rows) + "\n")
-                        return {"hold_s": i + 1, "panel": panel or None, "hold_drops_at_s": drops,
-                                "hold_reasserts": reasserts, "hold_end_hz": hz, "hold_end_ctrl": ctrl,
+                        return {"hold_s": round(time.monotonic() - started, 3), "panel": panel or None,
+                                "hold_drops_at_s": drops, "hold_reasserts": reasserts,
+                                "hold_end_hz": hz, "hold_end_ctrl": ctrl,
                                 "error": f"游戏连续离开前台 ≥{i - fg_lost_since}s (t={fg_lost_since}s 起, top={foc})"}
                 else:
                     fg_lost_since = None
         rows.append("\t".join([time.strftime("%H:%M:%S"), str(i), ctrl, mode, mper, active, rng, bat, foc,
                                str(tapped), str(rea), "" if ok is None else str(int(bool(ok)))]))
         open(tsv, "w").write("\n".join(rows) + "\n")
-        time.sleep(1)
-    return {"hold_s": a.hold, "panel": panel or None, "hold_drops_at_s": drops, "hold_reasserts": reasserts,
+        sleep_left = 1.0 - (time.monotonic() - iter_started)
+        if sleep_left > 0:
+            time.sleep(sleep_left)
+    return {"hold_s": round(time.monotonic() - started, 3), "panel": panel or None,
+            "hold_drops_at_s": drops, "hold_reasserts": reasserts,
             "hold_end_hz": hz, "hold_end_ctrl": ctrl}
 
 
