@@ -63,10 +63,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 4) 窗口内停充 (真实长期使用 = 不插电玩), 回读核对
-adb -s "$S" shell "su -c 'echo 0 > $CHG'" >/dev/null 2>&1 || true
-CHGN=$(adb -s "$S" shell "su -c 'cat $CHG'" 2>/dev/null | tr -d '\r')
-[ "$CHGN" = "0" ] && echo "停充成功 (charging_enabled=0)" || echo "!! 停充失败 (读到 ${CHGN:-?}), 继续但记录"
+# 4) 窗口内停充 (真实长期使用 = 不插电玩), 回读核对; KEEPCHG=1 跳过 (缓解实验要充电尽早制造穿 43°C)
+if [ "${KEEPCHG:-0}" != "1" ]; then
+  adb -s "$S" shell "su -c 'echo 0 > $CHG'" >/dev/null 2>&1 || true
+  CHGN=$(adb -s "$S" shell "su -c 'cat $CHG'" 2>/dev/null | tr -d '\r')
+  [ "$CHGN" = "0" ] && echo "停充成功 (charging_enabled=0)" || echo "!! 停充失败 (读到 ${CHGN:-?}), 继续但记录"
+else
+  echo "KEEPCHG=1: 保持充电 (用于尽早制造 43°C 穿越的缓解实验)"
+fi
 
 # 5) 30 分钟 hold 阶段 (PHASES 可外部覆盖; HOLD_KEEP 看门狗; 风扇/收尾/写回由 hold120.sh 管)
 #    注意: PHASES 必须以命令前缀形式传给子进程 (普通赋值不 export, hold120 会回退缺省四相位 —— v3 教训)
