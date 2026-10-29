@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--package", default="com.miHoYo.Yuanshen")
     parser.add_argument("--version", default="7.1.0_48052158_48145775")
+    parser.add_argument("--duration-s", type=float, default=None,
+                        help="analyze only the first N seconds; raw CSV remains complete")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -50,7 +52,12 @@ def main():
             rows.append(row)
     if not rows:
         raise ValueError("no SmartPerf rows")
+    total_rows = len(rows)
     start = rows[0]["timestamp"]
+    if args.duration_s is not None:
+        rows = [row for row in rows if (row["timestamp"] - start) / 1000 <= args.duration_s]
+    if not rows:
+        raise ValueError("no rows inside the requested duration")
     for row in rows:
         row["seconds"] = (row["timestamp"] - start) / 1000
     intervals = []
@@ -60,6 +67,7 @@ def main():
     summary = {
         "package": args.package, "version": args.version,
         "samples": len(rows), "duration_s": rows[-1]["seconds"],
+        "raw_rows_total": total_rows, "requested_window_s": args.duration_s,
         "fps_source": "SmartPerf app fps",
         "fps_mean": statistics.mean(fps) if fps else None,
         "fps_p50": percentile(fps, .5), "fps_p05": percentile(fps, .05),
