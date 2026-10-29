@@ -9,6 +9,9 @@ set -u
 S="${1:?serial}"; OUT="${2:?outdir}"; PKG="${3:-com.miHoYo.Yuanshen}"
 ROOT=${PF_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 PF="${PHONEFARM_BIN:-$ROOT/phonefarm}"
+if [ -z "${PF_LOCK_FDS:-}" ]; then
+  exec "$PF" lease --serial "$S" --label "panel-probe@$S" -- sh "$0" "$@"
+fi
 mkdir -p "$OUT"
 a() { adb -s "$S" shell "$@" 2>&1 | tr -d '\r'; }
 rate() {  # 当前刷新周期 (SF) 与活动模式 (display)
@@ -27,7 +30,7 @@ restore() {
 trap restore EXIT INT TERM
 a settings put system screen_off_timeout 1800000
 a am force-stop "$PKG"
-"$PF" onboard --package "$PKG" --serial "$S" --enter-only --no-guest --no-devlock --out "$OUT/onboard" >/dev/null 2>&1 || echo "onboard 失败" | tee -a "$OUT/probe.txt"
+"$PF" onboard --package "$PKG" --serial "$S" --enter-only --no-guest --out "$OUT/onboard" >/dev/null 2>&1 || echo "onboard 失败" | tee -a "$OUT/probe.txt"
 sleep 15
 echo "base: $(rate)" | tee -a "$OUT/probe.txt"
 a settings put system peak_refresh_rate 144; a settings put system min_refresh_rate 144; sleep 6
