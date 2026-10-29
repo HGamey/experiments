@@ -92,6 +92,18 @@ uidump() {
   adb -s "$S" pull "$UI_REMOTE" "$1" >/dev/null 2>&1 || return 1
   adb -s "$S" shell rm -f "$UI_REMOTE" >/dev/null 2>&1 || true
 }
+dialog_title() {
+  python3 - "$1" <<'PY'
+import re, sys
+xml = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+for match in re.finditer(r'<node[^>]*>', xml):
+    tag = match.group(0)
+    if 'resource-id="android:id/alertTitle"' in tag:
+        title = re.search(r'text="([^"]*)"', tag)
+        print(title.group(1) if title else 'system dialog')
+        break
+PY
+}
 find_tap() {
   python3 - "$1" <<'PY'
 import re, sys
@@ -126,6 +138,15 @@ PY
 TAP=""
 for I in 1 2 3 4 5 6; do
   if uidump "$OUT/display_page.xml"; then
+    DIALOG=$(dialog_title "$OUT/display_page.xml" || true)
+    if [ -n "$DIALOG" ]; then
+      echo "== Dismissing system dialog without changing its setting: $DIALOG =="
+      adb -s "$S" shell input keyevent KEYCODE_BACK
+      sleep 1
+      adb -s "$S" shell am start -a android.settings.DISPLAY_SETTINGS >/dev/null
+      sleep 2
+      uidump "$OUT/display_page.xml" || true
+    fi
     TAP=$(find_tap "$OUT/display_page.xml" || true)
   fi
   [ -n "$TAP" ] && break
@@ -168,7 +189,8 @@ PY
 fi
 {
   echo "== Policy while the captured page is foreground =="
-  adb -s "$S" shell 'dumpsys SurfaceFlinger | grep -m1 mPeriod' || true
+  adb -s "$S" shell dumpsys SurfaceFlinger --displays > "$OUT/page_sf_displays.txt" 2>&1 || true
+  grep -i -E 'activeFrameRateMode|activeDisplayMode|displayManagerPolicy|mPeriod' "$OUT/page_sf_displays.txt" || true
   adb -s "$S" shell 'settings list system; settings list secure; settings list global' | grep -i -E 'refresh|fps|resolution' || true
   adb -s "$S" shell 'dumpsys battery | grep -E "status:|level:|temperature:"' || true
   echo "== Visible page nodes =="
