@@ -10,6 +10,8 @@ export DEVLOCK_LABEL="${DEVLOCK_LABEL:-job-${PF_JOB_ID:-honor-refresh}}"
 
 adb -s "$S" shell input keyevent KEYCODE_WAKEUP
 adb -s "$S" shell wm dismiss-keyguard >/dev/null 2>&1 || true
+# HONOR's swipe keyguard remains after wm dismiss-keyguard; no PIN is bypassed.
+adb -s "$S" shell input swipe 636 2200 636 600 300
 sleep 2
 "$PF" onboard --package "$PKG" --serial "$S" --out "$OUT/onboard" --enter-only --no-charge-suspend
 adb -s "$S" shell dumpsys SurfaceFlinger --list > "$OUT/sf_layers.txt"

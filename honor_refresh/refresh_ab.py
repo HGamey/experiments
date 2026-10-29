@@ -337,6 +337,7 @@ def main():
     try:
         adb(args.serial, "shell", "input keyevent KEYCODE_WAKEUP")
         adb(args.serial, "shell", "wm dismiss-keyguard", check=False)
+        adb(args.serial, "shell", "input swipe 636 2200 636 600 300")
         time.sleep(2)
         original_mode = read_mode(args.serial, out / "original_mode")
         report["original_mode"] = original_mode
