@@ -104,7 +104,10 @@ def nav_log(out, step, started, attempt=None):
 
 def open_refresh_page(serial, out):
     started = time.monotonic()
-    adb(serial, "shell", "am start -a android.settings.DISPLAY_SETTINGS --activity-clear-top")
+    adb(serial, "shell", "input keyevent KEYCODE_HOME")
+    time.sleep(0.5)
+    adb(serial, "shell", "am start -n com.android.settings/.Settings$DisplaySettingsActivity --activity-clear-top")
+    nav_log(out, "home_and_explicit_display_settings", started)
     time.sleep(2.5)
     size = shell(serial, "wm size")
     match = re.search(r"(\d+)x(\d+)", size)
