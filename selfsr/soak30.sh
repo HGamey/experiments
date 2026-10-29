@@ -1,10 +1,9 @@
 #!/bin/sh
-# 第 7 组推荐配置 30 分钟长稳测试 v3 (研究 97f6adb9)。
-# v1/v2 教训: ①游戏 ~1fps 真凶疑似通知栏拉开盖住游戏 (失焦暂停) → 采样器自动检测并收起通知栏;
-#   ②停充命令引号被 adb 吃掉 → 改 adb shell "su -c '...'" 并回读核对; ③采样器 adb 子进程泄漏致
-#   任务进程组 present → 预留卡死 (F14) → cleanup 里 pkill 子进程; ④无 logcat 佐证 → 后台留证。
-#   PHASES 可外部覆盖 (对照跑用 native|hold=1800|tap=300|cool=40)。
-#   sh selfsr/soak30.sh [serial]        # srip 缺省; 约 45-60 分钟 (含降温等待)
+# srip 单挂 30 分钟长会话采样 (长稳 97f6adb9 / 凹陷缓解 e736a7c5)。
+# 面板/控制器/电池/前台每秒采样由 hold120.sh 完成；本脚本附加 gfxinfo、通知栏收起、停充与 logcat。
+# 注意：gfxinfo 对原神的 Vulkan 原生渲染不可见，focus 也受系统窗口干扰，均不作游戏存活的强判据。
+# PHASES/KEEPCHG 可外部覆盖；KEEPCHG=1 保持充电，用于尽早制造 43°C 穿越。
+#   sh selfsr/soak30.sh [serial] [PHASES=...] [KEEPCHG=1]
 set -eu
 S="${1:-91253241019A}"
 PKG="com.miHoYo.Yuanshen"
@@ -14,7 +13,7 @@ mkdir -p "$OUT"
 # KEY=VALUE 参数按环境变量用 (平台任务里设不了环境变量; 对照跑: PHASES='native|hold=1800|tap=300|cool=40')
 n=$#
 for arg in "$@"; do
-  case "$arg" in PHASES=*) export "$arg" ;; esac
+  case "$arg" in PHASES=*|KEEPCHG=*) export "$arg" ;; esac
 done
 shift "$n"
 
