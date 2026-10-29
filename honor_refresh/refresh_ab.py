@@ -95,7 +95,15 @@ def dismiss_dialog_if_needed(serial):
     return True
 
 
+def nav_log(out, step, started, attempt=None):
+    event = {"wall": time.time(), "step": step, "attempt": attempt,
+             "duration_s": round(time.monotonic() - started, 3)}
+    with open(Path(out) / "navigation.jsonl", "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
 def open_refresh_page(serial, out):
+    started = time.monotonic()
     adb(serial, "shell", "am start -a android.settings.DISPLAY_SETTINGS --activity-clear-top")
     time.sleep(2.5)
     size = shell(serial, "wm size")
@@ -107,21 +115,26 @@ def open_refresh_page(serial, out):
         cancel = dialog_cancel(xml)
         if cancel:
             tap(serial, cancel)
+            nav_log(out, "usb_dialog_cancel", started, attempt)
             time.sleep(1.5)
             xml = dump_ui(serial, xml_path)
         if "com.android.settings:id/light_container" in xml or "com.android.settings:id/dark_container" in xml:
             back = find_desc(xml, "向上导航")
             if back:
                 tap(serial, back)
+                nav_log(out, "dark_mode_up", started, attempt)
                 time.sleep(1.5)
                 xml = dump_ui(serial, xml_path)
         point = find_label(xml, "刷新率", contains=True)
         if point:
             tap(serial, point)
             time.sleep(2)
+            nav_log(out, "refresh_page_ready", started, attempt)
             return dump_ui(serial, Path(out) / "refresh_rate_page.xml")
         adb(serial, "shell", f"input swipe {width // 2} {int(height * .82)} {width // 2} {int(height * .28)} 350")
+        nav_log(out, "scroll_for_refresh_entry", started, attempt)
         time.sleep(1.2)
+    nav_log(out, "refresh_page_failed", started)
     raise RuntimeError("refresh-rate entry not found after dismissing dialogs and scrolling")
 
 
@@ -146,6 +159,7 @@ def read_mode(serial, out):
 
 
 def set_mode(serial, out, mode):
+    started = time.monotonic()
     if mode not in MODES:
         raise ValueError(mode)
     xml = open_refresh_page(serial, out)
@@ -161,7 +175,8 @@ def set_mode(serial, out, mode):
     if after != mode:
         raise RuntimeError(f"refresh mode verification failed: wanted {mode}, got {after}")
     Path(out, f"mode_{mode}.xml").write_text(xml, encoding="utf-8")
-    return {"before": before, "after": after, "verified": True}
+    return {"before": before, "after": after, "verified": True,
+            "navigation_and_verify_seconds": round(time.monotonic() - started, 3)}
 
 
 def foreground(serial):
