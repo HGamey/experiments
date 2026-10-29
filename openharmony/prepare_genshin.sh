@@ -10,7 +10,8 @@ export DEVLOCK_LABEL="${DEVLOCK_LABEL:-job-${PF_JOB_ID:-huawei-prepare}}"
 
 "$PF" probe --serial "$S" "bm dump -n $PKG" > "$OUT/package.txt" 2>&1 || true
 "$PF" probe --serial "$S" "aa dump -a" > "$OUT/missions_before.txt" 2>&1 || true
-"$PF" onboard --package "$PKG" --serial "$S" --out "$OUT/onboard" --enter-only --no-charge-suspend
+"$PF" exec --serial "$S" "aa start -b $PKG -a UnityPlayerAbility" --yes > "$OUT/launch.txt" 2>&1
+sleep 30
 "$PF" probe --serial "$S" "aa dump -a" > "$OUT/missions_after.txt" 2>&1 || true
 "$PF" perf --serial "$S" --source smartperf --app "$PKG" --rounds 5 --json > "$OUT/perf_probe.json" 2> "$OUT/perf_probe.stderr"
 cat "$OUT/perf_probe.json"
