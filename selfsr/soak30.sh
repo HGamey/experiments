@@ -11,6 +11,12 @@ PKG="com.miHoYo.Yuanshen"
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="${PF_JOB_OUT:-.}"
 mkdir -p "$OUT"
+# KEY=VALUE 参数按环境变量用 (平台任务里设不了环境变量; 对照跑: PHASES='native|hold=1800|tap=300|cool=40')
+n=$#
+for arg in "$@"; do
+  case "$arg" in PHASES=*) export "$arg" ;; esac
+done
+shift "$n"
 
 SRIP="srip:1:2688x1216:1.0:bm:120:stamp=0,panel=120,backend=sc,lead_ns=25000000,unlimit=1,sc_name=auto"
 PHASES="${PHASES:-$SRIP|hold=1800|tap=300|cool=40}"
