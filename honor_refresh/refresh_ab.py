@@ -73,6 +73,13 @@ def find_label(xml, label, contains=False):
     return None
 
 
+def find_desc(xml, label):
+    for node in nodes(xml):
+        if node.attrib.get("content-desc") == label and bounds(node):
+            return bounds(node)
+    return None
+
+
 def tap(serial, point):
     adb(serial, "shell", f"input tap {point[0]} {point[1]}")
 
@@ -102,6 +109,12 @@ def open_refresh_page(serial, out):
             tap(serial, cancel)
             time.sleep(1.5)
             xml = dump_ui(serial, xml_path)
+        if "com.android.settings:id/light_container" in xml or "com.android.settings:id/dark_container" in xml:
+            back = find_desc(xml, "向上导航")
+            if back:
+                tap(serial, back)
+                time.sleep(1.5)
+                xml = dump_ui(serial, xml_path)
         point = find_label(xml, "刷新率", contains=True)
         if point:
             tap(serial, point)
