@@ -13,6 +13,34 @@ adb -s "$S" shell wm dismiss-keyguard >/dev/null 2>&1 || true
 # HONOR's swipe keyguard remains after wm dismiss-keyguard; no PIN is bypassed.
 adb -s "$S" shell input swipe 636 2200 636 600 300
 sleep 2
+# Dismiss the USB connection-mode dialog through its existing Cancel button.
+adb -s "$S" shell uiautomator dump /sdcard/honor_refresh_ui.xml >/dev/null 2>&1 || true
+adb -s "$S" pull /sdcard/honor_refresh_ui.xml "$OUT/pre_ui.xml" >/dev/null 2>&1 || true
+CANCEL=$(python3 - "$OUT/pre_ui.xml" <<'PY'
+import re, sys
+try:
+    text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+except OSError:
+    raise SystemExit(0)
+for match in re.finditer(r'<node[^>]*>', text):
+    tag = match.group(0)
+    if 'resource-id="android:id/button2"' in tag and re.search(r'text="(取消|Cancel)"', tag):
+        bounds = re.search(r'bounds="([^"]+)"', tag)
+        values = re.findall(r'\d+', bounds.group(1)) if bounds else []
+        if len(values) == 4:
+            x1, y1, x2, y2 = map(int, values)
+            print((x1+x2)//2, (y1+y2)//2)
+        break
+PY
+)
+if [ -n "$CANCEL" ]; then
+  IFS=' ' read -r CX CY <<EOF
+$CANCEL
+EOF
+  adb -s "$S" shell input tap "$CX" "$CY"
+  sleep 1.5
+fi
+adb -s "$S" shell rm -f /sdcard/honor_refresh_ui.xml >/dev/null 2>&1 || true
 "$PF" onboard --package "$PKG" --serial "$S" --out "$OUT/onboard" --enter-only --no-charge-suspend
 adb -s "$S" shell dumpsys SurfaceFlinger --list > "$OUT/sf_layers.txt"
 adb -s "$S" shell dumpsys SurfaceFlinger > "$OUT/sf_dump.txt"
