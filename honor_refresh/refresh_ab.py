@@ -89,7 +89,7 @@ def dismiss_dialog_if_needed(serial):
 
 
 def open_refresh_page(serial, out):
-    adb(serial, "shell", "am start -a android.settings.DISPLAY_SETTINGS")
+    adb(serial, "shell", "am start -a android.settings.DISPLAY_SETTINGS --activity-clear-top")
     time.sleep(2.5)
     size = shell(serial, "wm size")
     match = re.search(r"(\d+)x(\d+)", size)
