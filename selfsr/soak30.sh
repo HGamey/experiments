@@ -69,8 +69,9 @@ CHGN=$(adb -s "$S" shell "su -c 'cat $CHG'" 2>/dev/null | tr -d '\r')
 [ "$CHGN" = "0" ] && echo "停充成功 (charging_enabled=0)" || echo "!! 停充失败 (读到 ${CHGN:-?}), 继续但记录"
 
 # 5) 30 分钟 hold 阶段 (PHASES 可外部覆盖; HOLD_KEEP 看门狗; 风扇/收尾/写回由 hold120.sh 管)
+#    注意: PHASES 必须以命令前缀形式传给子进程 (普通赋值不 export, hold120 会回退缺省四相位 —— v3 教训)
 status=0
-HOLD_KEEP=1 SETTLE=15 sh "$HERE/hold120.sh" "$S" "$OUT" "$PKG" || status=$?
+PHASES="$PHASES" HOLD_KEEP=1 SETTLE=15 sh "$HERE/hold120.sh" "$S" "$OUT" "$PKG" || status=$?
 
 # 6) 恢复充电, 收采样器 (pkill 子进程防 F14 复发), 汇总 (标准库)
 adb -s "$S" shell "su -c 'echo 1 > $CHG'" >/dev/null 2>&1 || true
