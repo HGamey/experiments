@@ -20,7 +20,7 @@
   - --pan: 窗口后录 5 秒屏、期间拖动视角, 量 HUD 区相邻帧平均差 (重影越重越大) 与画面中央的帧间差 (证明在转)
   - --power: 窗口内停充, 每秒读电池电流×电压 = 整机功耗 (mW) 与每个看到的帧的能耗 (mJ); 整轮亮度固定为手动、不改值
   - 游戏图层送显缓冲尺寸 (HWC 源); 挂层臂另读层 marker (层加载、窗口内帧数、selfsr 实际尺寸与计数)
-  不挂层的臂整臂在 tools/devlock 下跑; 挂层的臂由 gray-layer session 持设备租约, 挂层并冷启动游戏,
+  整轮 (准备、各臂、还原) 共持一个设备租约; gray-layer session 继承同一锁 fd, 挂层并冷启动游戏,
   onboard --enter-only --no-cold 只导航不重启 (重启会丢层), 采完 stop 会话 (会话负责摘层)。
   会话自带的 sample 在本机 ftrace 子进程起不来 (worker exit 76), 所以测量不用它。
 收尾 (含 Ctrl-C): Game Mode 恢复原模式并 reset 干预、清 debug.knobs.selfsr、screen_off_timeout 还原, 逐项回读核对。
@@ -34,7 +34,7 @@ REPO = os.environ.get("PF_ROOT") or os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "gfrc"))
 # 节点任务里 DEVLOCK_LABEL=job-<任务ID>：设备锁标签挂在它下面，看板就能把手机占用对到任务和研究。
 LOCK_PREFIX = os.environ["DEVLOCK_LABEL"] + "-" if os.environ.get("DEVLOCK_LABEL") else ""
-from gfrc_ab import Dev, parse_timestats, layer_src, sharpness, signflip, boot_ci, set_pkg_bits  # noqa: E402
+from gfrc_ab import Dev, parse_timestats, layer_src, sharpness, signflip, boot_ci, set_pkg_bits, lock_fds  # noqa: E402
 
 PKG_DEFAULT = "com.miHoYo.Yuanshen"
 DEV_TRACE = "/data/local/tmp/selfsr_ftrace_capture.sh"
@@ -93,12 +93,12 @@ def uses_layer(k):
 
 
 # 挂层会话按独立会话跑: 平台任务里 phonefarm 把带 PF_JOB_ID/PF_JOB_OUT 的会话当节点会话, 要求 --out 就是任务输出目录,
-# 而这里每臂一个会话目录。设备仍由会话的租约保护, 还原由每臂和收尾的核对负责 (restore.json)。
+# 而这里每臂一个会话目录。整轮的锁 fd 继续传给每臂, 还原由每臂和收尾的核对负责 (restore.json)。
 SESSION_ENV = {k: v for k, v in os.environ.items() if k not in ("PF_JOB_ID", "PF_JOB_OUT", "PF_JOB_LEASE_DIR")}
 
 
 def pf_json(pf, *args, inp=None, timeout=600):
-    r = subprocess.run([pf, *args], input=inp, capture_output=True, text=True, timeout=timeout, env=SESSION_ENV)
+    r = subprocess.run([pf, *args], input=inp, capture_output=True, text=True, timeout=timeout, env=SESSION_ENV, pass_fds=lock_fds())
     try:
         return r.returncode, json.loads(r.stdout)
     except ValueError:
@@ -185,7 +185,7 @@ def pan_probe(dev, a, name, out):
     W, H = max(W, H), min(W, H)
     remote = "/data/local/tmp/selfsr_pan.mp4"
     rec = subprocess.Popen(["adb", "-s", a.serial, "shell", "screenrecord", "--time-limit", "5", "--bit-rate", "40000000", remote],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
     time.sleep(0.8)
     y = int(H * 0.45)
     for i in range(4):   # 原神: 右半屏空白处拖动 = 转视角
@@ -199,12 +199,12 @@ def pan_probe(dev, a, name, out):
     def crop_diffs(box):
         # 逐帧从 ffmpeg 管道读、边读边算相邻帧差: 整段 600 帧一次读进来转 float 要几 GB, 16 GB 的节点会被系统 SIGKILL
         vw, vh = map(int, subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                                          "-of", "csv=p=0", local], capture_output=True, text=True).stdout.strip().split(","))
+                                          "-of", "csv=p=0", local], capture_output=True, text=True, pass_fds=lock_fds()).stdout.strip().split(","))
         x, yy = int(box[0] * vw) // 2 * 2, int(box[1] * vh) // 2 * 2
         w, h = (int(box[2] * vw) - x) // 2 * 2, (int(box[3] * vh) - yy) // 2 * 2
         w2, h2 = w // 2, h // 2   # 再缩一半: 量的是平均差, 不需要全分辨率
         p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", local, "-vf", f"crop={w}:{h}:{x}:{yy},scale={w2}:{h2},format=gray",
-                              "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+                              "-f", "rawvideo", "-"], stdout=subprocess.PIPE, pass_fds=lock_fds())
         n, prev, d = 0, None, []
         while True:
             buf = p.stdout.read(w2 * h2)
@@ -222,7 +222,7 @@ def pan_probe(dev, a, name, out):
         _, bd = crop_diffs(PAN_BG)
         moving = bd > 1.0   # 只算画面确实在动的相邻帧 (拖动前后静止段不算)
         dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", local],
-                                   capture_output=True, text=True).stdout.strip() or 0)
+                                   capture_output=True, text=True, pass_fds=lock_fds()).stdout.strip() or 0)
         return {"hud_flicker": round(float(hd[moving].mean()), 3) if moving.any() else None,
                 "pan_bg_motion": round(float(bd[moving].mean()), 3) if moving.any() else None,
                 "pan_moving_frames": int(moving.sum()), "pan_rec_fps": round(hf / dur, 1) if dur else None}
@@ -275,12 +275,12 @@ def measure(dev, a, name, out):
               "dumpsys SurfaceFlinger --timestats -disable >/dev/null")
     tr = subprocess.Popen(f"adb -s {shlex.quote(a.serial)} shell su -c "
                           + shlex.quote(shlex.quote(f"sh {DEV_TRACE} {a.window} {dev_trace} {a.pkg}")),
-                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
     pw = None
     if a.power:   # 先停充、等电流稳定, 再开 timestats 窗口, 两者对齐
         pw = subprocess.Popen(f"adb -s {shlex.quote(a.serial)} shell su -c "
                               + shlex.quote(shlex.quote(f"sh {DEV_POWER} {a.window} {POWER_PRE}")),
-                              shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                              shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, pass_fds=lock_fds())
         time.sleep(POWER_PRE)
     ts_text = dev.shell(ts_cmd, timeout=a.window + 60)
     ts = parse_timestats(ts_text, a.pkg)
@@ -300,7 +300,7 @@ def measure(dev, a, name, out):
     local_trace = os.path.join(out, "traces", f"{name}.txt")
     dev.adb(f"exec-out su -c {shlex.quote('cat ' + dev_trace)} > {shlex.quote(local_trace)}")
     dev.su(f"rm -f {dev_trace}")
-    pt = subprocess.run([a.phonefarm, "parse-trace", local_trace], capture_output=True, text=True)
+    pt = subprocess.run([a.phonefarm, "parse-trace", local_trace], capture_output=True, text=True, pass_fds=lock_fds())
     try:
         game = json.loads(pt.stdout)
     except ValueError:
@@ -426,9 +426,9 @@ def onboard(a, out, name, cold):
     args = [a.phonefarm, "onboard", "--package", a.pkg, "--serial", a.serial, "--enter-only", "--no-guest",
             "--out", os.path.join(out, "onboard", name)]
     if not cold:
-        # 挂层臂: 设备租约在 gray-layer session 手里, onboard 自己再拿锁会一直排队; 在会话的租约内导航
-        args += ["--no-cold", "--no-devlock"]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=900)
+        # 挂层臂: onboard 和 gray-layer session 继承整轮的同一锁 fd; 导航不重启游戏
+        args += ["--no-cold"]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=900, pass_fds=lock_fds())
     return r.returncode, r.stderr[-600:]
 
 
@@ -699,7 +699,7 @@ def arm_layer(a, out, name, k, note, locked):
         cmd += ["--so", a.so]
     if a.keep_layer_prop:
         cmd += ["--keep-prop"]
-    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=SESSION_ENV)
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=SESSION_ENV, pass_fds=lock_fds())
     st = None
     try:
         phase = None
@@ -850,11 +850,10 @@ def arm_layer(a, out, name, k, note, locked):
 
 
 def make_locked(a, out, orig_mode):
-    """devlock 下调本脚本 _locked (prep/plain/restore); run 与 hold 共用。
-    标签带序列号「<标签>@<序列号>」: 看板与远程调试据此只把这一台当作测量中 (harness-ops 的约定)。"""
+    """在整轮设备租约下调本脚本 _locked (prep/plain/restore)。"""
     def locked(what, name, k_str):
-        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"{LOCK_PREFIX}selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
-               os.path.abspath(__file__), "_locked", "--what", what, "--name", name, "--kind", k_str,
+        cmd = [sys.executable, "-I", os.path.abspath(__file__), "_locked",
+               "--what", what, "--name", name, "--kind", k_str,
                "--orig-mode", orig_mode, "--serial", a.serial, "--pkg", a.pkg, "--out", out,
                "--settle", str(a.settle), "--window", str(a.window), "--phonefarm", a.phonefarm]
         if getattr(a, "hold", 0) > 0:   # hold 探测: 无层臂的 arm_plain 在 _locked 子进程里跑, 要把 --hold 带过去
@@ -865,13 +864,7 @@ def make_locked(a, out, orig_mode):
             cmd += ["--pan"]
         if a.enter_script:
             cmd += ["--enter-script", a.enter_script]
-        r = None
-        for _ in range(90):   # devlock run 轮不到时立即返回 1 (不等), 有界重试
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                               env={**os.environ, "PHONEFARM_BIN": a.phonefarm})
-            if r.returncode == 0 or not any(s in r.stderr for s in ("not your turn", "busy:")):
-                break
-            time.sleep(10)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, pass_fds=lock_fds())
         line = next((l for l in r.stdout.splitlines() if l.startswith("ARM_JSON ")), None)
         return json.loads(line[9:]) if line else {"error": f"{what} exit {r.returncode}: {r.stderr[-400:]}"}
     return locked
@@ -1032,6 +1025,11 @@ def main():
     ap.add_argument("--kind", default=None)
     ap.add_argument("--orig-mode", default="standard")
     a = ap.parse_args()
+    if not lock_fds():
+        # Own one scope from the first read through the final restoration.
+        os.execvp(a.phonefarm, [a.phonefarm, "lease", "--serial", a.serial,
+                              "--label", f"{LOCK_PREFIX}selfsr@{a.serial}", "--",
+                              sys.executable, "-I", os.path.abspath(__file__), *sys.argv[1:]])
     out = os.path.abspath(a.out)
     PANEL_ORIG["path"] = os.path.join(out, "panel_orig.json")
     for d in ("shots", "traces", "sessions", "onboard"):
