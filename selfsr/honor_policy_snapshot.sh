@@ -142,9 +142,8 @@ for I in 1 2 3 4 5 6; do
     if [ -n "$DIALOG" ]; then
       echo "== Dismissing system dialog without changing its setting: $DIALOG =="
       adb -s "$S" shell input keyevent KEYCODE_BACK
-      sleep 1
-      adb -s "$S" shell am start -a android.settings.DISPLAY_SETTINGS >/dev/null
-      sleep 2
+      sleep 1.5
+      # Stay in the existing task: relaunching DISPLAY_SETTINGS reopens the USB dialog.
       uidump "$OUT/display_page.xml" || true
     fi
     TAP=$(find_tap "$OUT/display_page.xml" || true)
