@@ -25,8 +25,13 @@ KEY = "game_gfrc_mode"
 DEV_TRACE = "/data/local/tmp/gfrc_ftrace_capture.sh"
 
 
+def lock_fds():
+    """Keep the enclosing phonefarm lease alive in task children."""
+    return tuple(int(fd) for fd in os.environ.get("PF_LOCK_FDS", "").split(",") if fd)
+
+
 def sh(cmd, timeout=120, check=False):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, pass_fds=lock_fds())
     if check and r.returncode != 0:
         raise RuntimeError(f"命令失败 ({r.returncode}): {cmd}\n{r.stderr.strip()}")
     return r.stdout
@@ -210,7 +215,7 @@ def main():
             dev.shell(f"am force-stop {a.pkg}")
             r = subprocess.run([a.phonefarm, "onboard", "--package", a.pkg, "--serial", a.serial, "--enter-only",
                                 "--no-guest", "--out", os.path.join(out, "onboard")],
-                               capture_output=True, text=True, timeout=900)
+                               capture_output=True, text=True, timeout=900, pass_fds=lock_fds())
             if r.returncode != 0:
                 raise RuntimeError(f"进大世界失败: {r.stderr[-400:]}")
         order = []
@@ -236,13 +241,13 @@ def main():
                       "dumpsys SurfaceFlinger --timestats -disable >/dev/null")
             tr = subprocess.Popen(f"adb -s {shlex.quote(a.serial)} shell su -c "
                                   + shlex.quote(shlex.quote(f"sh {DEV_TRACE} {a.window} {dev_trace} {a.pkg}")),
-                                  shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                  shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
             ts = parse_timestats(dev.shell(ts_cmd, timeout=a.window + 60), a.pkg)
             tr.wait(timeout=a.window + 90)
             local_trace = os.path.join(out, f"trace_{name}.txt")
             dev.adb(f"exec-out su -c {shlex.quote('cat ' + dev_trace)} > {shlex.quote(local_trace)}")
             dev.su(f"rm -f {dev_trace}")
-            pt = subprocess.run([a.phonefarm, "parse-trace", local_trace], capture_output=True, text=True)
+            pt = subprocess.run([a.phonefarm, "parse-trace", local_trace], capture_output=True, text=True, pass_fds=lock_fds())
             try:
                 game = json.loads(pt.stdout)
             except ValueError:
