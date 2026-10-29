@@ -124,7 +124,9 @@ def open_refresh_page(serial, out):
             nav_log(out, "usb_dialog_cancel", started, attempt)
             time.sleep(1.5)
             xml = dump_ui(serial, xml_path)
-        if "com.android.settings:id/light_container" in xml or "com.android.settings:id/dark_container" in xml:
+        has_dark_controls = "com.android.settings:id/light_container" in xml or "com.android.settings:id/dark_container" in xml
+        has_display_root_content = any(marker in xml for marker in ("亮度", "字体与显示大小", "字体设置", "显示大小", "屏幕", "休眠"))
+        if has_dark_controls and not has_display_root_content:
             back = find_desc(xml, "向上导航")
             if back:
                 tap(serial, back)
