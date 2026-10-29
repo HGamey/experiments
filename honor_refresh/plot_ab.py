@@ -108,16 +108,18 @@ def decide(data):
 
 
 def write_report(data, decision, outdir):
+    def fmt(value):
+        return f"{value:.2f}" if value is not None else "n/a"
     lines = ["# HONOR 原神：智能 vs 高（各 20 分钟）", "",
              "| 指标 | 智能 | 高 |", "|---|---:|---:|"]
     for label, getter in (
         ("有效样本比例", lambda s: f"{100*s['valid_ratio']:.1f}%"),
-        ("FPS 均值", lambda s: f"{s['fps_mean']:.2f}"),
-        ("FPS 中位数", lambda s: f"{s['fps_p50']:.2f}"),
-        ("FPS p05", lambda s: f"{s['fps_p05']:.2f}"),
-        ("帧间隔 p95 (ms)", lambda s: f"{s['frame_interval_p95_ms']:.2f}"),
-        ("Skin 平均/峰值 (°C)", lambda s: f"{s['skin_c']['mean']:.2f} / {s['skin_c']['max']:.2f}"),
-        ("电池平均/峰值 (°C)", lambda s: f"{s['battery_hal_c']['mean']:.2f} / {s['battery_hal_c']['max']:.2f}"),
+        ("FPS 均值", lambda s: fmt(s["fps_mean"])),
+        ("FPS 中位数", lambda s: fmt(s["fps_p50"])),
+        ("FPS p05", lambda s: fmt(s["fps_p05"])),
+        ("帧间隔 p95 (ms)", lambda s: fmt(s["frame_interval_p95_ms"])),
+        ("Skin 平均/峰值 (°C)", lambda s: f"{fmt(s['skin_c']['mean'])} / {fmt(s['skin_c']['max'])}"),
+        ("电池平均/峰值 (°C)", lambda s: f"{fmt(s['battery_hal_c']['mean'])} / {fmt(s['battery_hal_c']['max'])}"),
         ("Thermal Status 最大值", lambda s: str(s["thermal_status_max"])),
     ):
         lines.append(f"| {label} | {getter(data['smart'][1])} | {getter(data['high'][1])} |")

@@ -8,7 +8,6 @@ import argparse
 import csv
 import json
 import re
-import shlex
 import statistics
 import subprocess
 import time
@@ -204,14 +203,11 @@ def cooldown(serial, package, target_c, out, max_seconds=900):
 
 
 def measure(serial, package, layer, seconds, raw_path, pan=False):
-    quoted_layer = shlex.quote(layer)
     pan_command = """
-  if [ $((i % 8)) -eq 1 ]; then
-    if [ $((i % 16)) -eq 1 ]; then
-      echo "===PAN left $i==="; input swipe 1900 650 1000 650 450
-    else
-      echo "===PAN right $i==="; input swipe 1000 650 1900 650 450
-    fi
+  if [ $((i % 2)) -eq 1 ]; then
+    echo "===PAN left $i==="; input swipe 1900 650 1000 650 450
+  else
+    echo "===PAN right $i==="; input swipe 1000 650 1900 650 450
   fi
 """ if pan else ""
     remote = f"""
@@ -219,11 +215,13 @@ end=$(( $(date +%s) + {int(seconds)} )); i=0
 while [ "$(date +%s)" -lt "$end" ]; do
   i=$((i+1))
   echo "===SAMPLE $i $(date +%s)==="
-  dumpsys SurfaceFlinger --latency-clear >/dev/null 2>&1
-{pan_command}  sleep 0.25
+  dumpsys SurfaceFlinger --timestats -disable -clear >/dev/null 2>&1
+  dumpsys SurfaceFlinger --timestats -enable >/dev/null 2>&1
+{pan_command}  sleep 5
   echo "===FRAME $i==="
-  dumpsys SurfaceFlinger --latency {quoted_layer}
-  if [ $((i % 20)) -eq 1 ]; then
+  dumpsys SurfaceFlinger --timestats -dump -maxlayers 24
+  dumpsys SurfaceFlinger --timestats -disable >/dev/null 2>&1
+  if [ $((i % 4)) -eq 1 ]; then
     echo "===SF $i==="; dumpsys SurfaceFlinger --displays
     echo "===BATTERY $i==="; dumpsys battery
     echo "===THERMAL $i==="; dumpsys thermalservice
@@ -261,22 +259,19 @@ def analyze(raw_path, package, csv_path):
         end = sample_starts[index + 1].start() if index + 1 < len(sample_starts) else len(text)
         block = text[match.end():end]
         frame_match = re.search(r"^===FRAME \d+===\s*$(.*?)(?=^===|\Z)", block, re.M | re.S)
-        timestamps = []
+        frame_count = 0
+        display_on_ms = 0
         if frame_match:
-            for line in frame_match.group(1).splitlines():
-                parts = line.split()
-                if len(parts) == 3:
-                    try:
-                        value = int(parts[1])
-                        if 0 < value < 9_000_000_000_000_000_000:
-                            timestamps.append(value)
-                    except ValueError:
-                        pass
-        timestamps.sort()
-        fps = None
-        if len(timestamps) > 2 and timestamps[-1] > timestamps[0]:
-            fps = (len(timestamps) - 1) / ((timestamps[-1] - timestamps[0]) / 1e9)
-            intervals.extend((b - a) / 1e6 for a, b in zip(timestamps, timestamps[1:]))
+            frame_text = frame_match.group(1)
+            display_on = re.search(r"^displayOnTime = (\d+)", frame_text, re.M)
+            display_on_ms = int(display_on.group(1)) if display_on else 0
+            for layer_block in frame_text.split("layerName = ")[1:]:
+                name = layer_block.splitlines()[0]
+                if package in name and "(BLAST)" in name:
+                    total = re.search(r"^totalFrames = (\d+)", layer_block, re.M)
+                    if total:
+                        frame_count = max(frame_count, int(total.group(1)))
+        fps = frame_count / (display_on_ms / 1000) if display_on_ms > 0 else None
         active = re.search(r"activeFrameRateMode=\{fps=([\d.]+) Hz", block)
         battery = re.search(r"^  temperature: (\d+)", block, re.M)
         thermal = re.search(r"Thermal Status: (\d+)", block)
@@ -287,7 +282,7 @@ def analyze(raw_path, package, csv_path):
         gpu_values = [float(value) for value in re.findall(r"Temperature\{mValue=([\d.-]+), mType=1, mName=GPU\d+, mStatus=\d+\}", hal_block)]
         focus = "FOCUS" not in block or package in block
         rows.append({
-            "sample": number, "wall": wall, "fps": fps, "frame_count": len(timestamps),
+            "sample": number, "wall": wall, "fps": fps, "frame_count": frame_count,
             "active_hz": float(active.group(1)) if active else None,
             "battery_service_c": int(battery.group(1)) / 10 if battery else None,
             "battery_hal_c": bat, "skin_c": skin,
@@ -305,6 +300,8 @@ def analyze(raw_path, package, csv_path):
     fps_values = [row["fps"] for row in valid]
     active_values = [row["active_hz"] for row in rows if row["active_hz"] is not None]
     summary = {
+        "fps_source": "SurfaceFlinger timestats totalFrames/displayOnTime",
+        "frame_interval_source": "not_available_from_timestats",
         "samples": len(rows), "valid_samples": len(valid),
         "valid_ratio": len(valid) / len(rows) if rows else 0,
         "wall_duration_s": rows[-1]["wall"] - rows[0]["wall"] if len(rows) > 1 else None,
