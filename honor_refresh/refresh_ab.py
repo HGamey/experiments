@@ -165,6 +165,23 @@ def launch_game(serial, package, settle):
         raise RuntimeError(f"game is not foreground after launch: {focus[-500:]}")
 
 
+def resolve_layer(serial, package, requested):
+    text = shell(serial, "dumpsys SurfaceFlinger --list")
+    candidates = []
+    for line in text.splitlines():
+        if package not in line or "Background for" in line:
+            continue
+        candidates.extend(re.findall(r"SurfaceView\[[^\n]+?\]\(BLAST\)#\d+", line))
+    if not candidates:
+        raise RuntimeError(f"no current BLAST SurfaceView layer for {package}")
+    if requested and requested != "auto":
+        base = requested.split("#", 1)[0].replace("(BLAST)", "")
+        matching = [candidate for candidate in candidates if base in candidate]
+        if matching:
+            candidates = matching
+    return candidates[-1]
+
+
 def battery_c(serial):
     match = re.search(r"temperature:\s*(\d+)", shell(serial, "dumpsys battery"))
     return int(match.group(1)) / 10 if match else None
@@ -323,7 +340,8 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if args.probe:
-        raw = measure(args.serial, args.package, args.layer, args.seconds, out / "probe_samples.raw")
+        layer = resolve_layer(args.serial, args.package, args.layer)
+        raw = measure(args.serial, args.package, layer, args.seconds, out / "probe_samples.raw")
         analysis = analyze(raw, args.package, out / "probe_samples.csv")
         (out / "probe_analysis.json").write_text(json.dumps(analysis["summary"], indent=2), encoding="utf-8")
         print(json.dumps(analysis["summary"], indent=2))
@@ -348,7 +366,9 @@ def main():
             arm = "smart" if mode == "智能" else "high"
             report["arms"][arm] = {"set_mode": set_mode(args.serial, out / f"{arm}_mode", mode)}
             launch_game(args.serial, args.package, args.settle)
-            raw = measure(args.serial, args.package, args.layer, args.seconds, out / f"{arm}_samples.raw")
+            layer = resolve_layer(args.serial, args.package, args.layer)
+            report["arms"][arm]["layer"] = layer
+            raw = measure(args.serial, args.package, layer, args.seconds, out / f"{arm}_samples.raw")
             analysis = analyze(raw, args.package, out / f"{arm}_samples.csv")
             report["arms"][arm]["analysis"] = analysis["summary"]
             (out / f"{arm}_analysis.json").write_text(json.dumps(analysis["summary"], indent=2), encoding="utf-8")

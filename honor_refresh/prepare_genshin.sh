@@ -53,7 +53,12 @@ import re, sys
 from pathlib import Path
 out, pkg = Path(sys.argv[1]), sys.argv[2]
 text = (out / 'sf_layers.txt').read_text(encoding='utf-8', errors='replace')
-candidates = [line.strip() for line in text.splitlines() if pkg in line and ('SurfaceView' in line or 'BLAST' in line)]
+candidates = []
+for line in text.splitlines():
+    if pkg in line and 'SurfaceView[' in line and '(BLAST)' in line and 'Background for' not in line:
+        match = re.search(r'SurfaceView\[[^\n]+?\]\(BLAST\)#\d+', line)
+        if match:
+            candidates.append(match.group(0))
 (out / 'game_layer.txt').write_text((candidates[-1] + '\n') if candidates else '', encoding='utf-8')
 version = re.search(r'versionName=([^\s]+)', (out / 'package_dump.txt').read_text(encoding='utf-8', errors='replace'))
 focus = (out / 'window_dump.txt').read_text(encoding='utf-8', errors='replace')
