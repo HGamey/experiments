@@ -587,6 +587,7 @@ def hold_probe(dev, a, name, out, k):
     rows = ["wall\tt\tctrl_fps\tmode\tmperiod\tactive_hz\trange\tbat\tfocus\ttap\treassert\tok"]
     drops, reasserts = [], 0
     last_ok, hz, ctrl = True, None, ""
+    fg_lost_since = None
     for i in range(int(a.hold)):
         tapped = rea = 0
         if tap_every and i > 0 and i % tap_every == 0:
@@ -614,6 +615,18 @@ def hold_probe(dev, a, name, out, k):
         foc = ""
         if i % 5 == 0:   # 前台 5 秒一次就够
             foc = (dev.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity'", timeout=30) or "").strip()[-90:]
+            if os.environ.get("HOLD_REQUIRE_FG") == "1":
+                if a.pkg not in foc:
+                    if fg_lost_since is None:
+                        fg_lost_since = i
+                    elif i - fg_lost_since >= 60:
+                        # 长采样若已离开游戏，后续面板读数不能冒充挂层游戏数据；保留已采 TSV 并判无效。
+                        open(tsv, "w").write("\n".join(rows) + "\n")
+                        return {"hold_s": i + 1, "panel": panel or None, "hold_drops_at_s": drops,
+                                "hold_reasserts": reasserts, "hold_end_hz": hz, "hold_end_ctrl": ctrl,
+                                "error": f"游戏连续离开前台 ≥{i - fg_lost_since}s (t={fg_lost_since}s 起, top={foc})"}
+                else:
+                    fg_lost_since = None
         rows.append("\t".join([time.strftime("%H:%M:%S"), str(i), ctrl, mode, mper, active, rng, bat, foc,
                                str(tapped), str(rea), "" if ok is None else str(int(bool(ok)))]))
         open(tsv, "w").write("\n".join(rows) + "\n")
@@ -762,18 +775,22 @@ def arm_layer(a, out, name, k, note, locked):
             except Exception:
                 return {}
 
+        m0 = marker()
         if getattr(a, "hold", 0) > 0:   # hold 探测: 不开测量窗口, 每秒采样刷新率 (查 120→60 掉落); finally 照常摘层
             rec.update(hold_probe(dev, a, name, out, k))
             m1 = marker()
-            rec["layer_loaded"] = bool(m1.get("layer_loaded"))
+            # 长会话必须在开始和结束都证明层加载；只在结束取 marker 会把会话到期误报成「从未加载」。
+            rec["layer_loaded"] = bool(m0.get("layer_loaded") and m1.get("layer_loaded"))
             rec["unlimit"] = m1.get("unlimit")
             if k["kind"] in ("sr", "srip"):
+                rec["selfsr_initial"] = m0.get("selfsr") or {}
                 rec["selfsr"] = m1.get("selfsr") or {}
-                if (rec["selfsr"].get("upscaled") or 0) <= 0:
-                    rec["error"] = f"层没在超分 (selfsr={rec['selfsr']})"
+                rec["selfsr_upscaled_in_hold"] = ((rec["selfsr"].get("upscaled") or 0)
+                                                   - (rec["selfsr_initial"].get("upscaled") or 0))
+                if (rec["selfsr"].get("upscaled") or 0) <= 0 or rec["selfsr_upscaled_in_hold"] <= 0:
+                    rec["error"] = f"层在 hold 窗口内没有超分 (initial={rec['selfsr_initial']}, final={rec['selfsr']})"
             return rec
 
-        m0 = marker()
         csv0 = interp_csv_size(dev, a) if k["kind"] in ("ip", "srip") else 0
         t0 = uptime_ns(dev)
         keep_events, keep_stop = [], {"run": False}
