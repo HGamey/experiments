@@ -98,6 +98,7 @@ def dismiss_dialog_if_needed(serial):
 def nav_log(out, step, started, attempt=None):
     event = {"wall": time.time(), "step": step, "attempt": attempt,
              "duration_s": round(time.monotonic() - started, 3)}
+    Path(out).mkdir(parents=True, exist_ok=True)
     with open(Path(out) / "navigation.jsonl", "a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
