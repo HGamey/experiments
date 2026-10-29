@@ -4,6 +4,7 @@ set -eu
 S="${1:-hdc:88X9K26901026869}"
 PKG="${2:-com.miHoYo.Yuanshen}"
 COUNT="${3:-10}"
+SETTLE="${4:-60}"
 OUT="${PF_JOB_OUT:-.}"
 PF="${PHONEFARM_BIN:-phonefarm}"
 SERIAL="${S#hdc:}"
@@ -26,7 +27,7 @@ trap cleanup 0 1 2 3 15
 
 command -v hdc >/dev/null 2>&1
 "$PF" exec --serial "$S" "aa start -b $PKG -a UnityPlayerAbility" --yes > "$OUT/launch.txt" 2>&1
-sleep 10
+sleep "$SETTLE"
 "$PF" exec --serial "$S" "SP_daemon -N $COUNT -PKG $PKG -f -t -profilerfps -OUT $REMOTE" --yes > "$OUT/capture.txt" 2>&1
 hdc -t "$SERIAL" file recv "$REMOTE" "$OUT/samples.csv" > "$OUT/recv.txt" 2>&1
 DOWNLOADED=1
