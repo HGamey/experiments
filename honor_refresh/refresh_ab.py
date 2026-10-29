@@ -107,7 +107,9 @@ def open_refresh_page(serial, out):
     started = time.monotonic()
     adb(serial, "shell", "input keyevent KEYCODE_HOME")
     time.sleep(0.5)
-    adb(serial, "shell", "am start -n com.android.settings/.Settings$DisplaySettingsActivity --activity-clear-top")
+    launch = adb(serial, "shell", "am start -n com.android.settings/.Settings\\$DisplaySettingsActivity --activity-clear-top")
+    if "Error" in launch.stdout or "Exception" in launch.stdout:
+        raise RuntimeError(f"display settings launch failed: {launch.stdout}")
     nav_log(out, "home_and_explicit_display_settings", started)
     time.sleep(2.5)
     size = shell(serial, "wm size")
