@@ -203,15 +203,24 @@ def cooldown(serial, package, target_c, out, max_seconds=900):
         time.sleep(min(30, max(1, max_seconds - elapsed)))
 
 
-def measure(serial, package, layer, seconds, raw_path):
+def measure(serial, package, layer, seconds, raw_path, pan=False):
     quoted_layer = shlex.quote(layer)
+    pan_command = """
+  if [ $((i % 8)) -eq 1 ]; then
+    if [ $((i % 16)) -eq 1 ]; then
+      echo "===PAN left $i==="; input swipe 1900 650 1000 650 450
+    else
+      echo "===PAN right $i==="; input swipe 1000 650 1900 650 450
+    fi
+  fi
+""" if pan else ""
     remote = f"""
 end=$(( $(date +%s) + {int(seconds)} )); i=0
 while [ "$(date +%s)" -lt "$end" ]; do
   i=$((i+1))
   echo "===SAMPLE $i $(date +%s)==="
   dumpsys SurfaceFlinger --latency-clear >/dev/null 2>&1
-  sleep 0.25
+{pan_command}  sleep 0.25
   echo "===FRAME $i==="
   dumpsys SurfaceFlinger --latency {quoted_layer}
   if [ $((i % 20)) -eq 1 ]; then
@@ -336,12 +345,13 @@ def main():
     parser.add_argument("--settle", type=int, default=60)
     parser.add_argument("--out", required=True)
     parser.add_argument("--probe", action="store_true", help="sample current foreground only; change nothing")
+    parser.add_argument("--pan", action="store_true", help="repeat identical left/right camera swipes in every arm")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if args.probe:
         layer = resolve_layer(args.serial, args.package, args.layer)
-        raw = measure(args.serial, args.package, layer, args.seconds, out / "probe_samples.raw")
+        raw = measure(args.serial, args.package, layer, args.seconds, out / "probe_samples.raw", pan=args.pan)
         analysis = analyze(raw, args.package, out / "probe_samples.csv")
         (out / "probe_analysis.json").write_text(json.dumps(analysis["summary"], indent=2), encoding="utf-8")
         print(json.dumps(analysis["summary"], indent=2))
@@ -351,7 +361,7 @@ def main():
     original_mode = None
     report = {"device": args.serial, "package": args.package, "layer": args.layer,
               "seconds_per_arm": args.seconds, "original_screen": original_screen,
-              "order": ["智能", "高"], "arms": {}, "restore": {}}
+              "repeatable_camera_pan": args.pan, "order": ["智能", "高"], "arms": {}, "restore": {}}
     try:
         adb(args.serial, "shell", "input keyevent KEYCODE_WAKEUP")
         adb(args.serial, "shell", "wm dismiss-keyguard", check=False)
@@ -368,7 +378,7 @@ def main():
             launch_game(args.serial, args.package, args.settle)
             layer = resolve_layer(args.serial, args.package, args.layer)
             report["arms"][arm]["layer"] = layer
-            raw = measure(args.serial, args.package, layer, args.seconds, out / f"{arm}_samples.raw")
+            raw = measure(args.serial, args.package, layer, args.seconds, out / f"{arm}_samples.raw", pan=args.pan)
             analysis = analyze(raw, args.package, out / f"{arm}_samples.csv")
             report["arms"][arm]["analysis"] = analysis["summary"]
             (out / f"{arm}_analysis.json").write_text(json.dumps(analysis["summary"], indent=2), encoding="utf-8")
