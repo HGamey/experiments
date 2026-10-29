@@ -104,6 +104,23 @@ for match in re.finditer(r'<node[^>]*>', xml):
         break
 PY
 }
+dialog_cancel() {
+  python3 - "$1" <<'PY'
+import re, sys
+xml = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+for match in re.finditer(r'<node[^>]*>', xml):
+    tag = match.group(0)
+    if 'resource-id="android:id/button2"' not in tag:
+        continue
+    label = re.search(r'text="([^"]*)"', tag)
+    bounds = re.search(r'bounds="([^"]*)"', tag)
+    values = re.findall(r'\d+', bounds.group(1)) if bounds else []
+    if label and label.group(1) in ('取消', 'Cancel') and len(values) == 4:
+        x1, y1, x2, y2 = map(int, values)
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+        break
+PY
+}
 find_tap() {
   python3 - "$1" <<'PY'
 import re, sys
@@ -141,7 +158,15 @@ for I in 1 2 3 4 5 6; do
     DIALOG=$(dialog_title "$OUT/display_page.xml" || true)
     if [ -n "$DIALOG" ]; then
       echo "== Dismissing system dialog without changing its setting: $DIALOG =="
-      adb -s "$S" shell input keyevent KEYCODE_BACK
+      CANCEL=$(dialog_cancel "$OUT/display_page.xml" || true)
+      if [ -n "$CANCEL" ]; then
+        IFS=' ' read -r CX CY <<EOF
+$CANCEL
+EOF
+        adb -s "$S" shell input tap "$CX" "$CY"
+      else
+        adb -s "$S" shell input keyevent KEYCODE_BACK
+      fi
       sleep 1.5
       # Stay in the existing task: relaunching DISPLAY_SETTINGS reopens the USB dialog.
       uidump "$OUT/display_page.xml" || true
