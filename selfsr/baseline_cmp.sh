@@ -5,6 +5,7 @@
 #   hwc   native vs hwc:0.56                        低分辨率 + 显示路径双线性 (基线)
 #   sr    native vs sr:0.56:2141x969:0.8            低分辨率 + 我们的超分 (第 3 组配方, 同一低分输入)
 #   srip  native vs srip:1:$SR_FULL:bm:120:$IP_TUNE 第 7 组推荐配置 (超分+插帧)
+#   gsr   native vs sr:0.56:$SR_OUT:algo=sgsr1        低分辨率 + SGSR1 (官方开源移植, 层内 algo=2; 需要 sgsr1 层版本)
 # KEY: ROUNDS (配对数, 缺省 1) WINDOW (测量窗口秒, 缺省 10) VIDEO (每臂窗口后录屏秒, 缺省 20; 0=不录)
 #      SETS SR_FULL (缺省 <屏幕>:1.0) SR_OUT (缺省 2141x969:0.8) COOL_MAX (缺省 42) PKG (缺省原神)
 #      HOLD_KEEP (同上) POWER (1 = 窗口内停充采整机功耗+电池温度, 高通机+root; 报温度必开)
@@ -57,6 +58,7 @@ run() {  # run <组名> <A> <B>
 for g in $SETS; do
   case $g in
     hwc)  run hwc_bilinear native "hwc:0.56" ;;
+    gsr)  run gsr_sgsr1     native "sr:0.56:${SR_OUT}:algo=sgsr1" ;;
     sr)   run sr_lowres    native "sr:0.56:${SR_OUT}" ;;
     srip) run srip_g7      native "srip:1:${SR_FULL}:bm:120:${IP_TUNE}" ;;
     *) echo "不认识的组: $g (可选 hwc sr srip)"; exit 2 ;;

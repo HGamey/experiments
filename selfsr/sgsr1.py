@@ -102,7 +102,7 @@ def sgsr1(src, w_out, h_out, edge_threshold=8.0 / 255.0, edge_sharpness=2.0, y_o
         wgt = _fast_lanczos2(x)
         acc_w += wgt
         acc_y += wgt * c[nm]
-    final_y = acc_y / np.maximum(acc_w, 1e-6)
+    final_y = acc_y / np.where(np.abs(acc_w) > 1e-6, acc_w, 1e-6)   # 普通除法 (与 frag 一致)
     max4 = np.maximum(np.maximum(c["left_y"], c["left_z"]), np.maximum(c["right_x"], c["right_w"]))
     min4 = np.minimum(np.minimum(c["left_y"], c["left_z"]), np.minimum(c["right_x"], c["right_w"]))
     final_y = np.clip(edge_sharpness * final_y, min4, max4)
