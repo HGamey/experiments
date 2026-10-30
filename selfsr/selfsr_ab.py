@@ -40,7 +40,8 @@ PKG_DEFAULT = "com.miHoYo.Yuanshen"
 DEV_TRACE = "/data/local/tmp/selfsr_ftrace_capture.sh"
 DEV_POWER = "/data/local/tmp/selfsr_power_sample.sh"
 CHG_NODE = "/sys/class/qcom-battery/charging_enabled"   # 高通停充开关; 停充后整机电流全部来自电池
-POWER_PRE = 5   # 停充后等电流稳定的秒数 (实测前 3~5 秒电流还在爬升)
+POWER_PRE = 30   # 停充后等电流稳定的秒数: power_sample.sh 在此窗口内每 5s 重写停充、连续 2 次负电流才开始采样
+                 # (2026-10-30 高温 A 臂停充失效后加固; 探针 47e21052ace6: 空闲态 6-8s 转放电)
 SR_PROP = "debug.knobs.selfsr"
 SR_OPTS = ("algo", "direct", "unlimit")   # → debug.knobs.selfsr_<键>; unlimit → debug.knobs.unlimit
 UNLIMIT_PROP = "debug.knobs.unlimit"
