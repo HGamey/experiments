@@ -2,7 +2,7 @@
 """baseline_report.py — 汇总 baseline_cmp.sh 各组的 report.json, 出对比表与图 (本机跑)。
 
     python3 -I selfsr/baseline_report.py --job-out <srbaseline_目录> [--out <报告目录>]
-读 hwc_bilinear/ sr_lowres/ srip_g7/ 三个子目录的 report.json (逐臂明细另读 arms.jsonl),
+读 hwc_bilinear/ sr_lowres/ srip_g7/ gsr_sgsr1/ 子目录的 report.json (逐臂明细另读 arms.jsonl),
 逐组列: 有效配对数与每指标 A/B 均值、diff%、p; 画逐指标 A/B 条形图 + 逐臂 seen_fps 散点。
 """
 import argparse
@@ -30,7 +30,8 @@ for _pat in ("~/.local/share/fonts/gosim/NotoSansSC*.ttf", "/usr/share/fonts/ope
 
 PAIRS = {"hwc_bilinear": ("native", "hwc:0.56 (低分+双线性)"),
          "sr_lowres": ("native", "sr:0.56 (低分+我们的超分)"),
-         "srip_g7": ("native", "srip 第7组 (超分+插帧)")}
+         "srip_g7": ("native", "srip 第7组 (超分+插帧)"),
+         "gsr_sgsr1": ("native", "gsr:0.56 (低分+SGSR1 层内)")}
 # 键 -> (中文名, 单位在名字里)
 METRICS = [("seen_fps", "上屏帧率 fps"), ("game_fps", "游戏帧率 fps"),
            ("game_frame_p95_ms", "游戏帧时间 p95 ms"), ("gpu_active_ms", "GPU 活动时长 ms"),
