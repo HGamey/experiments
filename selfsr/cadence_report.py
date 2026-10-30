@@ -61,7 +61,12 @@ def main():
         if arm.get("side") != "B":
             continue
         name = arm["arm"]
-        gaps = sclat_gaps(os.path.join(a.set_dir, "traces", f"{name}_sclat.txt"))
+        spath = os.path.join(a.set_dir, "traces", f"{name}_sclat.txt")
+        if not os.path.exists(spath):
+            rows.append({"arm": name, "seen_fps": arm.get("seen_fps"), "group": "no_data",
+                         "error": arm.get("error"), "atrace": {}})
+            continue
+        gaps = sclat_gaps(spath)
         gs = gap_stats(gaps)
         grp = "symptom" if gs["ratio8_17"] < 5 else ("clean" if gs["ratio8_17"] > 20 else "middle")
         marks = atrace_marks(os.path.join(a.set_dir, "traces", f"{name}_atrace.txt"))
