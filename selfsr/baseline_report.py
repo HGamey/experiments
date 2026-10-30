@@ -112,6 +112,8 @@ def main():
                 continue
             fps = (arm.get("rec") or {}).get("seen_fps")
             if fps is None:
+                fps = arm.get("seen_fps")
+            if fps is None:
                 continue
             ax.scatter(i, fps, color="#c0392b" if arm.get("arm") == "B" else "#7f8c8d", s=28)
             plotted = True
