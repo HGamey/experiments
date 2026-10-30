@@ -72,13 +72,14 @@ def main():
         marks = atrace_marks(os.path.join(a.set_dir, "traces", f"{name}_atrace.txt"))
         rows.append({"arm": name, "seen_fps": arm.get("seen_fps"), "sc_fps": arm.get("display_fps_sc"),
                      "sc_p95": arm.get("sc_interval_p95_ms"), "missed": arm.get("missed_frames"),
-                     "game_fps": arm.get("game_fps"), **gs, "group": grp, "atrace": marks})
+                     "game_fps": arm.get("game_fps"), "error": arm.get("error"),
+                     **gs, "group": grp, "atrace": marks})
 
     md = ["# srip 呈现节律双峰分析", "", f"来源: `{a.set_dir}`", "",
           "| 臂 | seen fps | sc p95 | 8ms | 17ms | 8:17 | 组 | SF丢帧 |", "|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        md.append(f"| {r['arm']} | {r['seen_fps']} | {r['sc_p95']} | {r['n8']} | {r['n17']} "
-                  f"| {r['ratio8_17'] if r['ratio8_17'] != float('inf') else 'inf'} | {r['group']} | {r['missed']} |")
+        md.append(f"| {r['arm']} | {r.get('seen_fps')} | {r.get('sc_p95', '–')} | {r.get('n8', '–')} | {r.get('n17', '–')} "
+                  f"| {r.get('ratio8_17', '–') if r.get('ratio8_17') != float('inf') else 'inf'} | {r['group']} | {r.get('missed', '–')} |")
 
     for grp in ("symptom", "clean"):
         sub = [r for r in rows if r["group"] == grp]
