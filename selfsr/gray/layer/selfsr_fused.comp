@@ -72,20 +72,64 @@ vec3 upscale_cr(ivec2 o) {
     return clamp(r, 0.0, 1.0);
 }
 
+// SGSR1 (Qualcomm 官方开源 snapdragon-gsr 的 sgsr1 mobile GLSL 变体逐式移植, 无边缘方向, BSD-3-Clause):
+// 基底=双线性, 绿通道当亮度; 4x4 邻域去四角的 12 tap, 边缘投票过阈才重建; fastLanczos2 自适应权重,
+// min/max 钳制 + deltaY ±23/255, 自带锐化 (EdgeSharpness 2.0) — algo=2 时跳过后面的 RCAS。
+// tap 坐标: col = pi.x - dx, row = pi.y + dy (与 selfsr/sgsr1.py 的 numpy 移植一致, 官方素材对齐验证)。
+float sgsr_lum(ivec2 p) { return texelFetch(src, clamp(p, ivec2(0), pc.in_size - 1), 0).g; }
+
+float sgsr_fl2(float x) { float a = x - 4.0; float b = x * a - a; a *= a; return b * a; }
+
+vec3 upscale_sgsr1(ivec2 o) {
+    const float EDGE = 8.0 / 255.0, SHARP = 2.0, YLIM = 23.0 / 255.0;
+    vec2 uv = (vec2(o) + 0.5) / vec2(pc.out_size);
+    vec3 base = textureLod(src, uv, 0.0).rgb;
+    float gb = base.g;
+    vec2 img = uv * vec2(pc.in_size) + vec2(-0.5, 0.5);
+    ivec2 pi = ivec2(floor(img));
+    vec2 pl = img - vec2(pi);
+    // (dx, dy) 顺序: updown_x/y/z/w, left_x/y/z/w, right_x/y/z/w; mean 四点 = left_y, left_z, right_x, right_w
+    const ivec2 D[12] = ivec2[12](ivec2(0,1), ivec2(-1,1), ivec2(-1,-2), ivec2(0,-2),
+                                  ivec2(1,-1), ivec2(0,-1), ivec2(0,0), ivec2(1,0),
+                                  ivec2(-1,-1), ivec2(-2,-1), ivec2(-2,0), ivec2(-1,0));
+    float t[12];
+    for (int k = 0; k < 12; k++) t[k] = sgsr_lum(pi + ivec2(-D[k].x, D[k].y));
+    float vote = abs(t[6] - t[5]) + abs(gb - t[5]) + abs(gb - t[6]);
+    if (vote <= EDGE) return clamp(base, 0.0, 1.0);
+    float mean = (t[5] + t[6] + t[8] + t[11]) * 0.25;
+    float s = 0.0;
+    for (int k = 0; k < 12; k++) s += abs(t[k] - mean);
+    float sd = 2.181818 / max(s, 1e-6);
+    float aw = 0.0, ay = 0.0;
+    for (int k = 0; k < 12; k++) {
+        vec2 d = pl + vec2(D[k]);
+        float x = (d.x * d.x + d.y * d.y) * 0.55 + clamp(abs(t[k] - mean) * sd, 0.0, 1.0);
+        float w = sgsr_fl2(x);
+        aw += w;
+        ay += w * (t[k] - mean);
+    }
+    float fy = ay / (abs(aw) > 1e-6 ? aw : 1e-6);
+    float mx = max(max(t[5], t[6]), max(t[8], t[11])) - mean;
+    float mn = min(min(t[5], t[6]), min(t[8], t[11])) - mean;
+    fy = clamp(SHARP * fy, mn, mx);
+    float dy = clamp(fy - (gb - mean), -YLIM, YLIM);
+    return clamp(base + vec3(dy), 0.0, 1.0);
+}
+
 void main() {
     ivec2 base = ivec2(gl_WorkGroupID.xy) * 16 - 1;   // tile[0][0] 对应的输出坐标
     uint lid = gl_LocalInvocationIndex;
     for (uint k = lid; k < 18u * 18u; k += 256u) {
         ivec2 t = ivec2(int(k % 18u), int(k / 18u));
         ivec2 q = clamp(base + t, ivec2(0), pc.out_size - 1);
-        tile[t.y][t.x] = pc.algo == 1 ? upscale_cr(q) : upscale(q);
+        tile[t.y][t.x] = pc.algo == 1 ? upscale_cr(q) : (pc.algo == 2 ? upscale_sgsr1(q) : upscale(q));
     }
     barrier();
     ivec2 o = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(o, pc.out_size))) return;
     ivec2 t = ivec2(gl_LocalInvocationID.xy) + 1;
     vec3 c = tile[t.y][t.x];
-    if (pc.sharp <= 0.0) { imageStore(dst, o, vec4(c, 1.0)); return; }
+    if (pc.algo == 2 || pc.sharp <= 0.0) { imageStore(dst, o, vec4(c, 1.0)); return; }   // SGSR1 自带钳制锐化, 不再 RCAS
     vec3 n = tile[t.y - 1][t.x], s = tile[t.y + 1][t.x], w = tile[t.y][t.x - 1], e = tile[t.y][t.x + 1];
     vec3 mn = min(min(min(n, s), min(w, e)), c);
     vec3 mx = max(max(max(n, s), max(w, e)), c);

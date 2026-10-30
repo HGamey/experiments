@@ -40,7 +40,8 @@ PKG_DEFAULT = "com.miHoYo.Yuanshen"
 DEV_TRACE = "/data/local/tmp/selfsr_ftrace_capture.sh"
 DEV_POWER = "/data/local/tmp/selfsr_power_sample.sh"
 CHG_NODE = "/sys/class/qcom-battery/charging_enabled"   # 高通停充开关; 停充后整机电流全部来自电池
-POWER_PRE = 5   # 停充后等电流稳定的秒数 (实测前 3~5 秒电流还在爬升)
+POWER_PRE = 30   # 停充后等电流稳定的秒数: power_sample.sh 在此窗口内每 5s 重写停充、连续 2 次负电流才开始采样
+                 # (2026-10-30 高温 A 臂停充失效后加固; 探针 47e21052ace6: 空闲态 6-8s 转放电)
 SR_PROP = "debug.knobs.selfsr"
 SR_OPTS = ("algo", "direct", "unlimit")   # → debug.knobs.selfsr_<键>; unlimit → debug.knobs.unlimit
 UNLIMIT_PROP = "debug.knobs.unlimit"
@@ -314,6 +315,16 @@ def measure(dev, a, name, out):
     open(os.path.join(out, "traces", f"{name}_sf.txt"), "w").write("\n".join(keep) + "\n")
     shot = os.path.join(out, "shots", f"{name}.png")
     dev.adb(f"exec-out screencap -p > {shlex.quote(shot)}")
+    if getattr(a, "video", 0) > 0:   # 窗口后录屏: 实况素材 (画质/视频对比), 游戏仍在跑; 不进任何指标
+        remote = "/data/local/tmp/selfsr_arm_video.mp4"
+        try:
+            subprocess.run(["adb", "-s", a.serial, "shell", "screenrecord", "--time-limit", str(int(a.video)),
+                            "--bit-rate", "40000000", remote], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=a.video + 60, pass_fds=lock_fds())
+            dev.adb(f"pull {remote} {shlex.quote(os.path.join(out, 'traces', f'{name}_video.mp4'))}")
+            dev.shell(f"rm -f {remote}")
+        except (subprocess.SubprocessError, OSError) as e:
+            open(os.path.join(out, "traces", f"{name}_video.err"), "w").write(f"录屏失败: {e}\n")
     pan = pan_probe(dev, a, name, out) if a.pan else {}
     span = (ts.get("displayOnTime") or a.window * 1000) / 1000
     return {**sfa, "in_game": a.pkg in fg,
@@ -893,6 +904,8 @@ def make_locked(a, out, orig_mode):
             cmd += ["--power"]
         if a.pan:
             cmd += ["--pan"]
+        if getattr(a, "video", 0):
+            cmd += ["--video", str(a.video)]
         if a.enter_script:
             cmd += ["--enter-script", a.enter_script]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, pass_fds=lock_fds())
@@ -1047,6 +1060,7 @@ def main():
     ap.add_argument("--cool-max", type=float, default=0, help="每臂开跑前电池温度要降到这个 °C 以下 (0 = 不等), 最多等 15 分钟")
     ap.add_argument("--fan", action="store_true", help="整轮开机身风扇最高档 (红魔 /sys/kernel/fan), 收尾写回原值; 没有该节点的机器跳过")
     ap.add_argument("--pan", action="store_true", help="窗口后录屏 + 拖视角, 量 HUD 重影 (原神右下技能区)")
+    ap.add_argument("--video", type=int, default=0, help="每臂测量窗口后录屏 N 秒到 traces/<臂>_video.mp4 (画质/视频对比素材, 不进指标; 0=不录)")
     ap.add_argument("--sf-atrace", action="store_true", help="窗口后抓 3 s SF atrace, 每秒数 waitframe 等 fence / 整帧跳过 / 缓冲被顶掉 (要 root)")
     ap.add_argument("--power", action="store_true", help="测量窗口内停充采整机功耗 (高通机 + root, 见 selfsr/power_sample.sh)")
     ap.add_argument("--phonefarm", default=os.environ.get("PHONEFARM_BIN") or os.path.join(REPO, "phonefarm"))

@@ -282,9 +282,9 @@ bool sr_init_from_props() {
         char a[PROP_VALUE_MAX] = {0}, d[PROP_VALUE_MAX] = {0};
         __system_property_get("debug.knobs.selfsr_algo", a);
         __system_property_get("debug.knobs.selfsr_direct", d);
-        g_algo = !strcmp(a, "lanczos") ? 0 : 1;   // 缺省 cr: 真机层自身 GPU 2.2 ms vs lanczos 4.4 ms, 离线画质持平
+        g_algo = !strcmp(a, "lanczos") ? 0 : (!strcmp(a, "sgsr1") ? 2 : 1);   // 缺省 cr: 真机层自身 GPU 2.2 ms vs lanczos 4.4 ms, 离线画质持平; sgsr1 = Qualcomm SGSR1 mobile 移植 (algo=2, 跳过 RCAS)
         g_direct_ok = d[0] == '1';
-        SR_LOG("开启: 送显分辨率 %ux%u 锐化 %.2f 算法 %s 直写 %d", w, h, g_sharp, g_algo ? "cr" : "lanczos", (int)g_direct_ok);
+        SR_LOG("开启: 送显分辨率 %ux%u 锐化 %.2f 算法 %s 直写 %d", w, h, g_sharp, g_algo == 2 ? "sgsr1" : (g_algo ? "cr" : "lanczos"), (int)g_direct_ok);
     }
     return g_on;
 }
@@ -594,6 +594,6 @@ std::string sr_json() {
              (unsigned long long)g_same_size, (unsigned long long)g_passthrough, (unsigned long long)g_direct_frames, g_reason.c_str(), pct(0.5), pct(0.95));
     char g2[160];
     snprintf(g2, sizeof g2, ",\"gpu_us_p50\":%llu,\"gpu_us_p95\":%llu,\"gpu_samples\":%zu,\"algo\":\"%s\"", gp(0.5), gp(0.95),
-             gg.size(), g_algo ? "cr" : "lanczos");
+             gg.size(), g_algo == 2 ? "sgsr1" : (g_algo ? "cr" : "lanczos"));
     return std::string(b) + fb + "}" + g2 + "}";
 }
