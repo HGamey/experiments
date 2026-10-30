@@ -1,7 +1,27 @@
 #!/bin/sh
 # charge_probe.sh <serial> — 停充保持探针 (Qualcomm charging_enabled)。
-# 写 0 后每 2s 回读节点/电池电流/USB 电流共 30s, 结束恢复 1。
-# 功耗轮 A 臂「停充没生效」根因验证: 厂商守护是否把节点翻回 1, 或电流仍正读。
-# 注意: 命令经 host sh → adb → 设备 sh → su -c 多层转义, 变量与算术都会丢, 必须全字面量。
+# 先把设备侧脚本 push 到 /data/local/tmp 再以 root 运行 (adb shell 会把长命令按空格拆散,
+# su -c 必须只接一个词; power_sample.sh 同款做法)。写 0 后每 2s 回读节点/电流共 30s, 结束恢复 1。
 S=${1:?用法: sh selfsr/charge_probe.sh <serial>}
-adb -s "$S" shell su -c 'echo 0 > /sys/class/qcom-battery/charging_enabled; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do cat /sys/class/qcom-battery/charging_enabled /sys/class/power_supply/battery/current_now /sys/class/power_supply/usb/current_now /sys/class/power_supply/battery/temp | tr "\n" " "; echo; sleep 2; done; echo 1 > /sys/class/qcom-battery/charging_enabled; echo restored; cat /sys/class/qcom-battery/charging_enabled'
+T=$(mktemp)
+cat > "$T" <<'EOF'
+#!/system/bin/sh
+B=/sys/class/qcom-battery/charging_enabled
+P=/sys/class/power_supply/battery
+U=/sys/class/power_supply/usb
+[ -w "$B" ] || { echo "no $B (writable check failed)"; ls -l "$B"; exit 3; }
+echo "before enabled=$(cat "$B") cur=$(cat "$P/current_now")"
+echo 0 > "$B"
+i=0
+while [ "$i" -lt 15 ]; do
+  echo "t=$((i*2)) enabled=$(cat "$B") cur=$(cat "$P/current_now") usb_cur=$(cat "$U/current_now" 2>/dev/null || echo NA) temp=$(cat "$P/temp")"
+  sleep 2
+  i=$((i+1))
+done
+echo 1 > "$B"
+echo "after enabled=$(cat "$B") cur=$(cat "$P/current_now")"
+EOF
+adb -s "$S" push "$T" /data/local/tmp/charge_probe_dev.sh >/dev/null
+rm -f "$T"
+adb -s "$S" shell su -c "sh /data/local/tmp/charge_probe_dev.sh"
+adb -s "$S" shell su -c "rm -f /data/local/tmp/charge_probe_dev.sh"
