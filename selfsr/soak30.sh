@@ -27,7 +27,9 @@ CHG0=$(adb -s "$S" shell "su -c 'cat $CHG'" 2>/dev/null | tr -d '\r')
 echo "充电开关原值=${CHG0:-读不到}; 通知栏已收起"
 
 # 2) 后台采样器: 每 60s gfxinfo + 前台 + 温度 + 充电; 通知栏若被拉开立即收起 (自愈)
+#    另每 30s 读 GPU 频率/governor (gpu_series.tsv) — 判定 srip 高温 74fps 档是 kgsl 热降频还是 SF 侧丢帧
 : > "$OUT/gfx_series.tsv"
+: > "$OUT/gpu_series.tsv"
 ( while :; do
     adb -s "$S" shell dumpsys gfxinfo "$PKG" 2>/dev/null | tr -d '\r' | awk -v t="$(date +%s)" '
       /^Total frames rendered:/ {tot=$4}
@@ -42,7 +44,13 @@ echo "充电开关原值=${CHG0:-读不到}; 通知栏已收起"
     tc=$(adb -s "$S" shell dumpsys battery 2>/dev/null | grep -m1 'temperature:' | tr -dc '0-9')
     chg=$(adb -s "$S" shell "su -c 'cat $CHG'" 2>/dev/null | tr -d '\r')
     printf '\t%s\t%s.%s\t%s\n' "${foc#* }" "${tc%?}" "${tc#"${tc%?}"}" "${chg:-?}" >> "$OUT/gfx_series.tsv"
-    sleep 60
+    sleep 30
+    # GPU 频率 (kgsl 多候选节点全读, 存在的有值); 温度电池列对齐用
+    gts=$(date +%s)
+    gbat=$(adb -s "$S" shell dumpsys battery 2>/dev/null | grep -m1 'temperature:' | tr -dc '0-9')
+    gpu=$(adb -s "$S" shell "su -c 'echo ==gpuclk; cat /sys/class/kgsl/kgsl-3d0/gpuclk; echo ==cur_freq; cat /sys/class/kgsl/kgsl-3d0/devfreq/cur_freq; echo ==governor; cat /sys/class/kgsl/kgsl-3d0/devfreq/governor; echo ==minmax; cat /sys/class/kgsl/kgsl-3d0/min_pwrlevel /sys/class/kgsl/kgsl-3d0/max_pwrlevel'" 2>/dev/null | tr -d '\r' | tr '\n' ';')
+    printf '%s\t%s.%s\t%s\n' "$gts" "${gbat%?}" "${gbat#"${gbat%?}"}" "$gpu" >> "$OUT/gpu_series.tsv"
+    sleep 30
   done
 ) &
 GFXPID=$!

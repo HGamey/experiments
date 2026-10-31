@@ -575,6 +575,7 @@ def hold_probe(dev, a, name, out, k):
     环境变量 (按阶段设, 平台任务里传不进环境就用这个):
       HOLD_TAP=<秒>    每 N 秒在屏幕右侧空白点一下 (测输入事件是否阻止降档; 坐标自动取当前横屏右侧中点)
       HOLD_REASSERT=1  屏幕掉离目标刷新率时重设 refresh_rate_mode 0→目标 (测重设能不能守住、能守多久)
+      HOLD_SEEN=<秒>   每 N 秒抽 2s 插帧子图层 SF latency 出 seen fps/间隔分位 (长稳双峰中途复发检测, 写 traces/<名>_seen.tsv)
     每秒一行写 traces/<名>_hold.tsv (中断也保住已采的); 返回汇总进 arms.jsonl。"""
     panel = str((k.get("tune") or {}).get("panel") or "")
     target = str(PANEL_MODE[panel]) if panel in PANEL_MODE else None
@@ -602,6 +603,10 @@ def hold_probe(dev, a, name, out, k):
     started = time.monotonic()
     next_tap = tap_every
     next_focus = 0.0
+    seen_every = int(os.environ.get("HOLD_SEEN") or 0)   # >0: 每 N 秒抽 2s 子图层 latency (长稳双峰复发检测)
+    stsv = os.path.join(out, "traces", f"{name}_seen.tsv")
+    seen_hdr = False
+    next_seen = float(seen_every)
     while True:
         iter_started = time.monotonic()
         elapsed = iter_started - started
@@ -613,6 +618,18 @@ def hold_probe(dev, a, name, out, k):
             dev.shell(f"input tap {tap_x} {tap_y}")
             tapped = 1
             next_tap += tap_every
+        if seen_every and elapsed >= next_seen:
+            next_seen += seen_every
+            try:   # 图层不在 (native/无插帧) 时 SF --list grep 空, 命令 exit 0 秒回, 返回 {} 不写行
+                sc = sc_layer_fps(dev, 2)
+                if sc.get("fps"):
+                    if not seen_hdr:
+                        open(stsv, "w").write("wall\tt\tfps\tinterval_p50_ms\tinterval_p95_ms\n")
+                        seen_hdr = True
+                    open(stsv, "a").write(
+                        f"{time.time():.0f}\t{int(elapsed)}\t{sc['fps']}\t{sc.get('interval_p50_ms','')}\t{sc.get('interval_p95_ms','')}\n")
+            except Exception as e:   # 采样失败不终止 hold, 记最后一行错误便于事后查
+                open(stsv, "a").write(f"{time.time():.0f}\t{int(elapsed)}\tERROR\t{repr(e)[:100]}\n")
         vals = (dev.shell(sample, timeout=30) or "").strip().split("|")
         vals += [""] * (5 - len(vals))
         ctrl, mode, mper, active, rng = (v.strip() for v in vals[:5])
@@ -908,7 +925,10 @@ def make_locked(a, out, orig_mode):
             cmd += ["--video", str(a.video)]
         if a.enter_script:
             cmd += ["--enter-script", a.enter_script]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, pass_fds=lock_fds())
+        # hold 探测的 plain 臂在子进程里跑 hold_probe: 时限要罩住 hold+进世界+收尾 (56f5676318a5 教训:
+        # 硬编码 1800 在 hold=1800 时必超时, SIGTERM 杀掉后 arms.jsonl 缺该臂整轮作废)
+        to = 1800 if getattr(a, "hold", 0) <= 0 else int(a.hold * 1.5) + 600
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=to, pass_fds=lock_fds())
         line = next((l for l in r.stdout.splitlines() if l.startswith("ARM_JSON ")), None)
         return json.loads(line[9:]) if line else {"error": f"{what} exit {r.returncode}: {r.stderr[-400:]}"}
     return locked
@@ -992,6 +1012,10 @@ def cmd_hold(a, out):
                 os.environ["HOLD_WARM"] = str(opts["warm"])
             else:
                 os.environ.pop("HOLD_WARM", None)
+            if opts.get("seen"):   # 每 N 秒抽 2s 子图层 latency (双峰中途复发检测; 无子图层的臂不传)
+                os.environ["HOLD_SEEN"] = str(opts["seen"])
+            else:
+                os.environ.pop("HOLD_SEEN", None)
             if opts.get("cool"):   # 阶段前等电池降到 N °C (制造「即将向上穿越 43°C」的条件; 最多 20 分钟)
                 cm = float(opts["cool"])
                 dev.shell(f"am force-stop {a.pkg}; input keyevent KEYCODE_SLEEP")
