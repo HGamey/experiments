@@ -925,7 +925,10 @@ def make_locked(a, out, orig_mode):
             cmd += ["--video", str(a.video)]
         if a.enter_script:
             cmd += ["--enter-script", a.enter_script]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, pass_fds=lock_fds())
+        # hold 探测的 plain 臂在子进程里跑 hold_probe: 时限要罩住 hold+进世界+收尾 (56f5676318a5 教训:
+        # 硬编码 1800 在 hold=1800 时必超时, SIGTERM 杀掉后 arms.jsonl 缺该臂整轮作废)
+        to = 1800 if getattr(a, "hold", 0) <= 0 else int(a.hold * 1.5) + 600
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=to, pass_fds=lock_fds())
         line = next((l for l in r.stdout.splitlines() if l.startswith("ARM_JSON ")), None)
         return json.loads(line[9:]) if line else {"error": f"{what} exit {r.returncode}: {r.stderr[-400:]}"}
     return locked
