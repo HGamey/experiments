@@ -10,13 +10,14 @@
 #      SETS SR_FULL (缺省 <屏幕>:1.0) SR_OUT (缺省 2141x969:0.8) COOL_MAX (缺省 42) PKG (缺省原神)
 #      HOLD_KEEP (同上) POWER (1 = 窗口内停充采整机功耗+电池温度, 高通机+root; 报温度必开)
 #      SF_ATRACE (1 = 每臂窗口后抓 3s SF atrace: fence unsignal/整帧跳过/缓冲被顶掉; 呈现节律根因排查用)
+#      REROLL (1 = srip 臂窗口前探测子图层节律, 90fps 症状档则丢弃冷启动重掷; REROLL_MAX 缺省 3 次重掷)
 # 画质流程: 每臂 shots/<臂>.png (2688x1216) + traces/<臂>_video.mp4; 离线把 native 缩回游戏送显尺寸当真值,
 # hwc 截图回缩 0.56 得低分输入, 双线性/SGSR/selfsr 在同一低分帧上离线放大后对比 (baseline_quality.py)。
 set -eu
 n=$#
 for arg in "$@"; do
   case "$arg" in
-    ROUNDS=*|WINDOW=*|VIDEO=*|SETS=*|SR_FULL=*|SR_OUT=*|IP_TUNE=*|COOL_MAX=*|PKG=*|HOLD_KEEP=*|POWER=*|SF_ATRACE=*) export "$arg" ;;
+    ROUNDS=*|WINDOW=*|VIDEO=*|SETS=*|SR_FULL=*|SR_OUT=*|IP_TUNE=*|COOL_MAX=*|PKG=*|HOLD_KEEP=*|POWER=*|SF_ATRACE=*|REROLL=*|REROLL_MAX=*) export "$arg" ;;
     *) set -- "$@" "$arg" ;;
   esac
 done

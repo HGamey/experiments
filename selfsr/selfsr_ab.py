@@ -810,6 +810,17 @@ def arm_layer(a, out, name, k, note, locked):
             rec["error"] = f"会话在测量前已结束 (phase={s.get('phase')}, stop={s.get('stop_reason')})"
             return rec
 
+        # REROLL=1: 窗口前探测子图层呈现节律 (srip-cadence: 冷启动随机定型双稳, 症状臂 88-90fps / 干净臂 116-119)。
+        # fps<100 判症状档 → rec["reroll"]=True 提前返回 (finally 摘层清场), 上层丢弃本次冷启动重掷;
+        # 干净则只留 reroll_probe 记录继续测量。探测拿不到 fps (子图层不在/命令失败) 与症状同路, 预算耗尽照常开窗口。
+        if os.environ.get("REROLL") == "1" and k["kind"] == "srip" and getattr(a, "hold", 0) <= 0:
+            sc = sc_layer_fps(dev, 3, raw_path=os.path.join(out, "traces", f"{name}_probe.txt"))
+            rec["reroll_probe"] = {"fps": sc.get("fps"), "interval_p95_ms": sc.get("interval_p95_ms"),
+                                   "clean": bool(sc.get("fps") is not None and sc["fps"] >= 100)}
+            if not rec["reroll_probe"]["clean"]:
+                rec["reroll"] = True
+                return rec
+
         def marker():
             m = session_action(a.phonefarm, sdir, "marker")
             try:
@@ -1215,6 +1226,7 @@ def main():
                 break
             k, k_str = (a.a, ka) if arm == "A" else (a.b, kb)
             name = f"{arm}{pair + 1}"
+            t_arm_start = time.time()   # 重掷耗时统计 (REROLL) 的臂起点
             cool_wait = 0
             if a.cool_max > 0:   # 等电池降温 (过热时系统高温保护会弹窗挡前台、限制应用运行)
                 dev.shell(f"am force-stop {a.pkg}; input keyevent KEYCODE_SLEEP")
@@ -1231,7 +1243,22 @@ def main():
                     note(f"{name}: 等降温 {cool_wait}s (电池 ≤ {a.cool_max}°C)")
             dev.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")   # 无密码锁屏的机器 (荣耀) 也要解锁
             if uses_layer(k):
-                rec = arm_layer(a, out, name, k, note, lambda w, n, _k: locked(w, n, k_str))
+                # REROLL=1 的重掷循环: arm_layer 窗口前探测到症状档 (rec["reroll"]) 就丢弃本次冷启动重跑整臂,
+                # 尝试名加 #rN 后缀 (sessions/traces 分文件), arms.jsonl 只写最后一次 (原名, 配对名不变)。
+                dropped, attempt = [], 0
+                while True:
+                    aname = name if attempt == 0 else f"{name}#r{attempt}"
+                    rec = arm_layer(a, out, aname, k, note, lambda w, n, _k: locked(w, n, k_str))
+                    attempt += 1
+                    if not (rec.get("reroll") and attempt <= int(os.environ.get("REROLL_MAX") or 3)):
+                        rec.pop("reroll", None)
+                        break
+                    dropped.append({"attempt": attempt, "took_s": round(time.time() - t_arm_start, 1),
+                                    **(rec.get("reroll_probe") or {})})
+                    note(f"{aname}: 呈现症状档 (探测 {rec.get('reroll_probe')}), 丢弃重掷 (第 {attempt} 次)")
+                if dropped:
+                    rec["reroll_dropped"] = dropped
+                    rec["reroll_attempts"] = attempt
             else:
                 rec = locked("plain", name, k_str)
             rec = {"arm": name, "side": arm, "kind": k_str, "pair": pair + 1, "seq": seq + 1, **rec, "cool_wait_s": cool_wait,
