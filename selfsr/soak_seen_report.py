@@ -100,16 +100,19 @@ def main():
     a = ap.parse_args()
     tr = os.path.join(a.set_dir, "traces")
     res = {"set_dir": a.set_dir, "arms": []}
-    names = ([a.seen_name] if a.seen_name
-             else sorted(os.path.basename(p) for p in os.listdir(tr) if p.endswith("_seen.tsv"))) if os.path.isdir(tr) else []
-    for nm in names:
+    names = sorted(os.path.basename(p) for p in os.listdir(tr) if p.endswith("_hold.tsv")) if os.path.isdir(tr) else []
+    if a.seen_name:   # 显式指定 seen 文件时以它为准 (对应臂)
+        names = [a.seen_name.replace("_seen.tsv", "_hold.tsv")]
+    for hold_nm in names:
+        nm = hold_nm.replace("_hold.tsv", "_seen.tsv")
         rows, errs = load_seen(os.path.join(tr, nm))
         pts = [{"t": r["t"], "fps": r["fps"], "p50_ms": r["p50"], "p95_ms": r["p95"], "class": classify(r)}
                for r in rows]
         cls = [p["class"] for p in pts]
-        hold = nm.replace("_seen.tsv", "_hold.tsv")
+        hold = hold_nm
         res["arms"].append({
-            "seen_tsv": nm, "samples": len(pts), "parse_errors": errs,
+            "seen_tsv": nm if rows else None, "hold_tsv": hold_nm,
+            "samples": len(pts), "parse_errors": errs,
             "classes": {c: cls.count(c) for c in ("clean", "middle", "symptom", "unknown", "error")},
             "fps_min": min((p["fps"] for p in pts if p["fps"] is not None), default=None),
             "fps_max": max((p["fps"] for p in pts if p["fps"] is not None), default=None),
@@ -120,7 +123,7 @@ def main():
             "points": pts})
         arm = res["arms"][-1]
         first_tr = arm["first_transition"]
-        print(f"[{nm}] 样本 {len(pts)} (解析错 {errs})  档位 " +
+        print(f"[{hold_nm}] 样本 {len(pts)} (解析错 {errs})  档位 " +
               " ".join(f"{c}={cls.count(c)}" for c in ("clean", "middle", "symptom", "unknown", "error") if cls.count(c)) +
               f"  fps {arm['fps_min']}-{arm['fps_max']}" +
               (f"  首次档位切换 {first_tr}" if first_tr else "  无档位切换"))
