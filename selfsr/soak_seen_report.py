@@ -11,6 +11,12 @@
   middle  : 105<=fps<110        (漏 ~5% 槽位, 111-114)
   symptom : fps<105 且 p95>=14  (90fps 吸引子, [8,8,17]ms, p95≈17)
   unknown : 其余 (采样不足/ERROR 行)
+
+tap 停滞剔除 (0fb99539a40c 定因): soak30 的防熄屏 input tap (PHASES tap=N) 后 0-4s 内的
+seen 抽样会出现秒级空窗 (两窗全死≈1.5fps 或一净一死≈59), 与档位无关——tap=120/seen=30 轮
+13/13 节拍采样现停滞签名、节拍间 0/26。凡 tap 后 0-4s 且 fps<100 的样本判 tap_stall, 不入
+档位统计 (对 band 无信息量); tap 后读数 >=100 仍按档位判 (停滞只会压低读数)。缺省剔除,
+--keep-tap 保留原始档位判定。
 """
 import argparse
 import json
@@ -45,8 +51,34 @@ def classify(r):
     if r["fps"] >= 105:
         return "middle"
     if r["p95"] is not None and r["p95"] >= 14:
-        return "symptom"
+        # 均匀半频带 (~60fps, p50≈16.6 与 p95 几乎同值) = 冷启动暂态档 (fa95b1ed8796);
+        # 90fps 症状吸引子是 [8,8,17] 模式, p50 仍在 8.x; 节流/起步行 p50 偶到 16.x 但 p95 拉开 —— 用 p50+均匀性分开。
+        return "transient60" if (r["p50"] or 0) >= 14 and (r["p95"] or 0) - (r["p50"] or 0) <= 2 else "symptom"
     return "unknown"
+
+
+def load_tap_times(path):
+    """hold TSV 的 tap 列 (第 10 列, =1 表示本秒点了防熄屏 tap) → 有序 tap 时刻列表。"""
+    taps = []
+    if not os.path.exists(path):
+        return taps
+    for ln in open(path):
+        p = ln.rstrip("\n").split("\t")
+        if not p or p[0] == "wall":
+            continue
+        try:
+            if len(p) > 9 and p[9] == "1":
+                taps.append(int(p[1]))
+        except ValueError:
+            continue
+    return sorted(taps)
+
+
+def dt_after_tap(taps, t):
+    """t 距离它之前最近一次 tap 的秒数; 无先行 tap 返回 None。"""
+    import bisect
+    i = bisect.bisect_right(taps, t) - 1
+    return t - taps[i] if i >= 0 else None
 
 
 def load_hold_minutes(path):
@@ -97,34 +129,47 @@ def main():
     ap.add_argument("--set-dir", required=True, help="任务 out 目录 (含 traces/)")
     ap.add_argument("--seen-name", default=None, help="seen TSV 文件名, 缺省扫 traces/*_seen.tsv")
     ap.add_argument("--json-out", default=None, help="摘要 JSON 输出路径")
+    ap.add_argument("--keep-tap", action="store_true",
+                    help="不把 tap 后停滞样本单独判 tap_stall (保留旧口径, 诊断用)")
     a = ap.parse_args()
     tr = os.path.join(a.set_dir, "traces")
-    res = {"set_dir": a.set_dir, "arms": []}
+    res = {"set_dir": a.set_dir, "tap_exclusion": not a.keep_tap, "arms": []}
     names = sorted(os.path.basename(p) for p in os.listdir(tr) if p.endswith("_hold.tsv")) if os.path.isdir(tr) else []
     if a.seen_name:   # 显式指定 seen 文件时以它为准 (对应臂)
         names = [a.seen_name.replace("_seen.tsv", "_hold.tsv")]
+    classes_all = ("clean", "middle", "transient60", "symptom", "unknown", "tap_stall", "error")
     for hold_nm in names:
         nm = hold_nm.replace("_hold.tsv", "_seen.tsv")
         rows, errs = load_seen(os.path.join(tr, nm))
-        pts = [{"t": r["t"], "fps": r["fps"], "p50_ms": r["p50"], "p95_ms": r["p95"], "class": classify(r)}
-               for r in rows]
+        taps = load_tap_times(os.path.join(tr, hold_nm))
+        pts = []
+        for r in rows:
+            dt = dt_after_tap(taps, r["t"]) if taps else None
+            post_tap = dt is not None and 0 <= dt <= 4
+            c = classify(r)
+            if not a.keep_tap and post_tap and r["fps"] is not None and r["fps"] < 100:
+                c = "tap_stall"
+            pts.append({"t": r["t"], "fps": r["fps"], "p50_ms": r["p50"], "p95_ms": r["p95"],
+                        "class": c, "dt_tap_s": dt, "post_tap": post_tap})
         cls = [p["class"] for p in pts]
         hold = hold_nm
         res["arms"].append({
             "seen_tsv": nm if rows else None, "hold_tsv": hold_nm,
-            "samples": len(pts), "parse_errors": errs,
-            "classes": {c: cls.count(c) for c in ("clean", "middle", "symptom", "unknown", "error")},
+            "samples": len(pts), "parse_errors": errs, "tap_events": len(taps),
+            "post_tap_samples": sum(1 for p in pts if p["post_tap"]),
+            "classes": {c: cls.count(c) for c in classes_all},
             "fps_min": min((p["fps"] for p in pts if p["fps"] is not None), default=None),
             "fps_max": max((p["fps"] for p in pts if p["fps"] is not None), default=None),
             "p95_max_ms": max((p["p95_ms"] for p in pts if p["p95_ms"] is not None), default=None),
+            "p95_max_ms_excl_tap_stall": max((p["p95_ms"] for p in pts if p["p95_ms"] is not None and p["class"] != "tap_stall"), default=None),
             "first_transition": next(({"at_s": pts[i - 1]["t"], "from": cls[i - 1], "to": cls[i]}
                                       for i in range(1, len(cls)) if cls[i] != cls[0]), None),
             "hold": load_hold_minutes(os.path.join(tr, hold)),
             "points": pts})
         arm = res["arms"][-1]
         first_tr = arm["first_transition"]
-        print(f"[{hold_nm}] 样本 {len(pts)} (解析错 {errs})  档位 " +
-              " ".join(f"{c}={cls.count(c)}" for c in ("clean", "middle", "symptom", "unknown", "error") if cls.count(c)) +
+        print(f"[{hold_nm}] 样本 {len(pts)} (解析错 {errs})  tap {len(taps)} 次/命中 {arm['post_tap_samples']}  档位 " +
+              " ".join(f"{c}={cls.count(c)}" for c in classes_all if cls.count(c)) +
               f"  fps {arm['fps_min']}-{arm['fps_max']}" +
               (f"  首次档位切换 {first_tr}" if first_tr else "  无档位切换"))
         h = res["arms"][-1]["hold"]
