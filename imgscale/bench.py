@@ -467,6 +467,7 @@ def main():
         print(f"[load] {entry['file']} {w}x{h} -> crop {cw}x{ch} sha256={digest[:12]}", flush=True)
 
     results = []
+    region_metrics = {}
     for idx, (entry, w, h, work) in enumerate(images):
         name = entry["file"].rsplit(".", 1)[0]
         hw, hh, half = halve_area(work, w, h)
@@ -517,6 +518,22 @@ def main():
                 with open(os.path.join(scene_dir, "region.json"), "w") as fh:
                     json.dump({"image": name, "x": rx, "y": ry, "w": rw, "h": rh, "kind": kind,
                                "variants": {vid: method for vid, method, _ in variants}}, fh)
+                # 区域受限指标：以原生裁剪 v1 为参照，各方法只在裁剪区域内算 PSNR/SSIM
+                ref_crop = variants[0][2]
+                rla = luma_plane(ref_crop, rw, rh)
+                rta, riw = integral(rla, rw, rh)
+                rtaa, _ = integral([v * v for v in rla], rw, rh)
+                rmetrics = {}
+                for mi, method in enumerate(methods):
+                    img_crop = variants[mi + 1][2]
+                    rlb = luma_plane(img_crop, rw, rh)
+                    rmetrics[method] = {
+                        "psnr": psnr_rgb(img_crop, ref_crop, rw, rh),
+                        "ssim": ssim_box(rla, rlb, rw, rh, win=win, stride=stride,
+                                         orig_ints=(rta, rtaa, riw)),
+                    }
+                region_metrics[scene_name] = {"image": name, "x": rx, "y": ry, "w": rw, "h": rh,
+                                              "kind": kind, "methods": rmetrics}
                 print(f"[crop] {scene_name} <- {name} region=({rx},{ry}) kind={kind}", flush=True)
 
     def agg(method):
@@ -548,6 +565,7 @@ def main():
         "results": results,
         "summary": summary,
         "vs_bilinear": vs_base,
+        "region_metrics": region_metrics,
     }
     with open(os.path.join(out_root, "report.json"), "w") as fh:
         json.dump(report, fh, indent=1, ensure_ascii=False)
@@ -569,6 +587,18 @@ def main():
     lines += ["", "## 每图明细", "", "| 图 | 方法 | PSNR (dB) | SSIM | ms(中位) |", "|---|---|---|---|---|"]
     for r in results:
         lines.append(f"| {r['image']} | {r['method']} | {r['psnr']:.3f} | {r['ssim']:.5f} | {r['ms_median']:.0f} |")
+    if region_metrics:
+        lines += ["", "## 区域受限指标（裁剪区域内，参照 = 原生 v1）", ""]
+        for scene_name, rm in region_metrics.items():
+            lines.append(f"### {scene_name}（{rm['image']} {rm['kind']}，{rm['w']}×{rm['h']} @({rm['x']},{rm['y']})）")
+            lines += ["", "| 方法 | 区域 PSNR (dB) | 区域 SSIM |", "|---|---|---|"]
+            for m in methods:
+                if m in rm["methods"]:
+                    v = rm["methods"][m]
+                    lines.append(f"| {m} | {v['psnr']:.3f} | {v['ssim']:.5f} |")
+            by_psnr = sorted(rm["methods"], key=lambda m: -rm["methods"][m]["psnr"])
+            by_ssim = sorted(rm["methods"], key=lambda m: -rm["methods"][m]["ssim"])
+            lines += ["", f"PSNR 序：{' > '.join(by_psnr)}", "", f"SSIM 序：{' > '.join(by_ssim)}", ""]
     with open(os.path.join(out_root, "table.md"), "w") as fh:
         fh.write("\n".join(lines) + "\n")
 
