@@ -555,18 +555,24 @@ def wait_batt_temp(dev, want_c, rising, max_s=1200):
 def set_panel(dev, k, rec):
     panel = str((k.get("tune") or {}).get("panel"))
     want = str(PANEL_MODE[panel])
-    if dev.shell("settings get system refresh_rate_mode").strip() == want:
-        # 值没变 settings 不发变更通知, 屏幕停在游戏自己要的刷新率 (残留原值时真机 60 Hz): 先写 0 再写目标
-        dev.shell("settings put system refresh_rate_mode 0")
-        time.sleep(1)
-    dev.shell(f"settings put system refresh_rate_mode {want}")
-    time.sleep(4)
-    per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
-    rec["panel_period"] = per.strip()
-    m = re.search(r"\(([0-9.]+) fps\)", per)
-    if not m or abs(float(m.group(1)) - float(panel)) > 3:
-        return f"屏幕没切到 {panel} Hz: {per.strip()}"
-    return None
+    attempts = []
+    for attempt in range(3):
+        if attempt > 0 or dev.shell("settings get system refresh_rate_mode").strip() == want:
+            # 值没变 settings 不发变更通知, 屏幕停在游戏自己要的刷新率 (残留原值时真机 60 Hz): 先写 0 再写目标。
+            # 测量前的切换偶尔一次不生效；只在准备阶段有界重试，不触碰测量窗口或候选参数。
+            dev.shell("settings put system refresh_rate_mode 0")
+            time.sleep(1)
+        dev.shell(f"settings put system refresh_rate_mode {want}")
+        time.sleep(4)
+        per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
+        rec["panel_period"] = per.strip()
+        attempts.append(per.strip())
+        m = re.search(r"\(([0-9.]+) fps\)", per)
+        if m and abs(float(m.group(1)) - float(panel)) <= 3:
+            rec["panel_attempts"] = attempts
+            return None
+    rec["panel_attempts"] = attempts
+    return f"屏幕没切到 {panel} Hz（3 次尝试）: {per.strip()}"
 
 
 def hold_probe(dev, a, name, out, k):
