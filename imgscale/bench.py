@@ -5,17 +5,19 @@
   python3 bench.py material.json xonotic.png stk.png ... [KEY=VALUE ...]
 
 参数（KEY=VALUE）：
-  METHODS=nearest,bilinear,bicubic,lanczos2,lanczos3   要跑的方法子集
+  METHODS=nearest,bilinear,bicubic,lanczos2,lanczos3,lanczos3_sharp   要跑的方法子集
   REPS=3            每方法每图计时重复次数（首图另有一次不计时的预热）
   CROP_W=960        工作图宽（对素材中心裁剪，不缩放原图）
   CROP_H=540        工作图高
-  SCENES=2          输出多少个画面的盲评裁剪（每画面=原生+各方法同区域，文件名 v1..vN 不含来源）
+  SCENES=2          输出多少个画面的盲评裁剪（每画面两套区域：方差最大 + 高频能量最高，
+                    后者偏细线/小字；各含原生+各方法，文件名 v1..vN 不含来源）
   CROP_REGION_W=320 盲评裁剪宽
   CROP_REGION_H=180 盲评裁剪高
   SSIM_STRIDE=2     SSIM 窗口步长
   SSIM_WIN=8        SSIM 窗口边长（盒窗）
 
-只用标准库。缩小统一 2x2 面积平均；放大用可分离核（边界按下标夹取的边缘延伸）。
+只用标准库。缩小统一 2x2 面积平均；放大用可分离核（边界按下标夹取的边缘延伸）；
+lanczos3_sharp = lanczos3 放大后接 3×3 unsharp（amount 0.5）。
 PSNR 全图 RGB；SSIM 用 Rec.601 亮度、盒窗（Wang 2004 的均匀窗变体，非高斯窗），
 C1=(0.01*255)^2、C2=(0.03*255)^2。计时只含放大本身（perf_counter，单线程纯 Python）。
 
@@ -196,7 +198,19 @@ def axis_weights(method, in_n, out_n):
 
 
 def resize(method, rows, in_w, in_h, out_w, out_h):
-    """可分离重采样：先水平后垂直；输入输出都是每行 RGB 字节。"""
+    """可分离重采样：先水平后垂直；输入输出都是每行 RGB 字节。
+    名字以 _sharp 结尾 = 先按基础核放大，再做 3×3 unsharp（amount 0.5）。"""
+    if method.endswith("_sharp"):
+        base, sharpen = method[:-len("_sharp")], 0.5
+    else:
+        base, sharpen = method, None
+    out = _resize_base(base, rows, in_w, in_h, out_w, out_h)
+    if sharpen:
+        out = unsharp(out, out_w, out_h, sharpen)
+    return out
+
+
+def _resize_base(method, rows, in_w, in_h, out_w, out_h):
     wx = axis_weights(method, in_w, out_w)
     wy = axis_weights(method, in_h, out_h)
     tmp = []
@@ -248,6 +262,32 @@ def halve_area(rows, w, h):
             line[x * 3 + 2] = (r0[p + 2] + r0[p + 5] + r1[p + 2] + r1[p + 5] + 2) >> 2
         out.append(bytes(line))
     return ow, oh, out
+
+
+def unsharp(rows, w, h, amount=0.5):
+    """3×3 unsharp：可分离 [1,2,1]/4 模糊后 out = v + amount*(v - blur)，边界下标夹取。"""
+    tmp = []
+    for line in rows:
+        acc = [0.0] * (w * 3)
+        for x in range(w):
+            p0 = (x - 1 if x else 0) * 3
+            p1 = x * 3
+            p2 = (x + 1 if x + 1 < w else w - 1) * 3
+            for c in range(3):
+                acc[x * 3 + c] = (line[p0 + c] + 2.0 * line[p1 + c] + line[p2 + c]) / 4.0
+        tmp.append(acc)
+    out = []
+    for y in range(h):
+        r0, r1, r2 = tmp[max(0, y - 1)], tmp[y], tmp[min(h - 1, y + 1)]
+        src = rows[y]
+        line = bytearray(w * 3)
+        for x in range(w):
+            for c in range(3):
+                blur = (r0[x * 3 + c] + 2.0 * r1[x * 3 + c] + r2[x * 3 + c]) / 4.0
+                v = src[x * 3 + c] + amount * (src[x * 3 + c] - blur)
+                line[x * 3 + c] = min(255, max(0, int(v + 0.5))) & 0xFF
+        out.append(bytes(line))
+    return out
 
 # ---------------------------------------------------------------- 指标
 
@@ -321,7 +361,7 @@ def ssim_box(la, lb, w, h, win=8, stride=2, orig_ints=None):
 
 # ---------------------------------------------------------------- 主流程
 
-ALL_METHODS = ["nearest", "bilinear", "bicubic", "lanczos2", "lanczos3"]
+ALL_METHODS = ["nearest", "bilinear", "bicubic", "lanczos2", "lanczos3", "lanczos3_sharp"]
 
 
 def center_crop(rows, w, h, cw, ch):
@@ -343,6 +383,44 @@ def pick_crop_region(ta, taa, iw, w, h, rw, rh, step=16):
             if best is None or var > best[0]:
                 best = (var, x0, y0)
     return best[1], best[2]
+
+
+def fine_energy_plane(luma, w, h):
+    """|luma - 3×3 盒模糊| 高频能量图（细线/小字处高）。"""
+    blur = []
+    for y in range(h):
+        r0 = luma[max(0, y - 1) * w:(max(0, y - 1) + 1) * w]
+        r1 = luma[y * w:(y + 1) * w]
+        r2 = luma[min(h - 1, y + 1) * w:(min(h - 1, y + 1) + 1) * w]
+        row = []
+        for x in range(w):
+            a, b, c = r0[max(0, x - 1)], r0[x], r0[min(w - 1, x + 1)]
+            d, e, f = r1[max(0, x - 1)], r1[x], r1[min(w - 1, x + 1)]
+            g, i, j = r2[max(0, x - 1)], r2[x], r2[min(w - 1, x + 1)]
+            row.append(abs(d - (a + b + c + d + e + f + g + i + j) / 9.0))
+        blur.append(row)
+    return [v for row in blur for v in row]
+
+
+def pick_fine_region(hp, w, h, rw, rh, avoid=None, step=16):
+    """找高频能量均值最大的 rw×rh 窗口；avoid=(x,y,rw,rh) 时避开与它的大面积重叠。"""
+    thp, iw = integral(hp, w, h)
+    area = float(rw * rh)
+    ranked = []
+    for y0 in range(0, h - rh + 1, step):
+        r1, r2 = y0 * iw, (y0 + rh) * iw
+        for x0 in range(0, w - rw + 1, step):
+            a, b = x0, x0 + rw
+            mean = (thp[r2 + b] - thp[r2 + a] - thp[r1 + b] + thp[r1 + a]) / area
+            if avoid:
+                ax, ay, aw, ah = avoid
+                ox = max(0, min(x0 + rw, ax + aw) - max(x0, ax))
+                oy = max(0, min(y0 + rh, ay + ah) - max(y0, ay))
+                if ox * oy > 0.2 * rw * rh:
+                    continue
+            ranked.append((mean, x0, y0))
+    ranked.sort(reverse=True)
+    return ranked[0][1], ranked[0][2]
 
 
 def crop_png(rows, x0, y0, cw, ch):
@@ -422,18 +500,24 @@ def main():
             print(f"[run] {name} {method} PSNR={p:.3f} SSIM={s:.5f} "
                   f"ms={['%.0f' % m for m in ms]} median={median:.0f}", flush=True)
         if idx < scenes:
+            regions = {}
             x0, y0 = pick_crop_region(ta, taa, iw, w, h, rw, rh)
-            scene_dir = os.path.join(out_root, "crops", f"scene{idx + 1}")
-            os.makedirs(scene_dir, exist_ok=True)
-            variants = [("v1", "native", crop_png(work, x0, y0, rw, rh))]
-            for mi, method in enumerate(methods):
-                variants.append((f"v{mi + 2}", method, crop_png(outputs[method], x0, y0, rw, rh)))
-            for vid, _method, crop in variants:
-                png_write(os.path.join(scene_dir, vid + ".png"), rw, rh, crop)
-            with open(os.path.join(scene_dir, "region.json"), "w") as fh:
-                json.dump({"image": name, "x": x0, "y": y0, "w": rw, "h": rh,
-                           "variants": {vid: method for vid, method, _ in variants}}, fh)
-            print(f"[crop] scene{idx + 1} <- {name} region=({x0},{y0})", flush=True)
+            regions["scene%d" % (idx + 1)] = (x0, y0, "variance")
+            hp = fine_energy_plane(la, w, h)
+            fx0, fy0 = pick_fine_region(hp, w, h, rw, rh, avoid=(x0, y0, rw, rh))
+            regions["scene%dfine" % (idx + 1)] = (fx0, fy0, "fine")
+            for scene_name, (rx, ry, kind) in regions.items():
+                scene_dir = os.path.join(out_root, "crops", scene_name)
+                os.makedirs(scene_dir, exist_ok=True)
+                variants = [("v1", "native", crop_png(work, rx, ry, rw, rh))]
+                for mi, method in enumerate(methods):
+                    variants.append((f"v{mi + 2}", method, crop_png(outputs[method], rx, ry, rw, rh)))
+                for vid, _method, crop in variants:
+                    png_write(os.path.join(scene_dir, vid + ".png"), rw, rh, crop)
+                with open(os.path.join(scene_dir, "region.json"), "w") as fh:
+                    json.dump({"image": name, "x": rx, "y": ry, "w": rw, "h": rh, "kind": kind,
+                               "variants": {vid: method for vid, method, _ in variants}}, fh)
+                print(f"[crop] {scene_name} <- {name} region=({rx},{ry}) kind={kind}", flush=True)
 
     def agg(method):
         rows = [r for r in results if r["method"] == method]
