@@ -54,10 +54,17 @@ def main():
         name = arm["arm"]
         probe = arm.get("reroll_probe") or {}
         spath = os.path.join(a.set_dir, "traces", f"{name}_sclat.txt")
-        gs, grp = {"n": 0, "n8": 0, "n17": 0, "ratio8_17": None}, "no_data"
+        gs, grp = {"n": 0, "n8": 0, "n17": 0, "ratio8_17": None}, "no_window"
         if os.path.exists(spath):
             gs = gap_stats(sclat_gaps(spath))
             grp = "symptom" if gs["ratio8_17"] < 5 else ("clean" if gs["ratio8_17"] > 20 else "middle")
+        elif not arm.get("error"):
+            # 无窗口数据 (症状臂探测不干净提前返回, 未开窗口): 用窗口前探测档位判定
+            p = arm.get("reroll_probe") or {}
+            if p.get("clean") is True:
+                grp = "clean"
+            elif (p.get("fps") is not None and 80 <= p["fps"] < 100) or (p.get("interval_p95_ms") or 0) >= 14:
+                grp = "symptom"
         rows.append({"arm": name, "attempts": arm.get("reroll_attempts", 1),
                      "dropped": arm.get("reroll_dropped") or [], "probe_fps": probe.get("fps"),
                      "probe_p95": probe.get("interval_p95_ms"), "probe_clean": probe.get("clean"),

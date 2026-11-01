@@ -813,11 +813,13 @@ def arm_layer(a, out, name, k, note, locked):
         # REROLL=1: 窗口前探测子图层呈现节律 (srip-cadence: 冷启动随机定型双稳, 症状臂 88-90fps / 干净臂 116-119)。
         # fps<100 判症状档 → rec["reroll"]=True 提前返回 (finally 摘层清场), 上层丢弃本次冷启动重掷;
         # 干净则只留 reroll_probe 记录继续测量。探测拿不到 fps (子图层不在/命令失败) 与症状同路, 预算耗尽照常开窗口。
+        # REROLL_LAST=1 (上层在预算最后一次尝试设置): 症状也只留记录、照常开窗口拿完整数据 (fa95b1ed8796 教训:
+        # 预算用尽的臂提前返回会缺窗口指标, 症状判定只能靠探测值)。
         if os.environ.get("REROLL") == "1" and k["kind"] == "srip" and getattr(a, "hold", 0) <= 0:
             sc = sc_layer_fps(dev, 3, raw_path=os.path.join(out, "traces", f"{name}_probe.txt"))
             rec["reroll_probe"] = {"fps": sc.get("fps"), "interval_p95_ms": sc.get("interval_p95_ms"),
                                    "clean": bool(sc.get("fps") is not None and sc["fps"] >= 100)}
-            if not rec["reroll_probe"]["clean"]:
+            if not rec["reroll_probe"]["clean"] and os.environ.get("REROLL_LAST") != "1":
                 rec["reroll"] = True
                 return rec
 
@@ -1248,6 +1250,8 @@ def main():
                 dropped, attempt = [], 0
                 while True:
                     aname = name if attempt == 0 else f"{name}#r{attempt}"
+                    # 预算内最后一次尝试: REROLL_LAST=1 让 arm_layer 症状也照常开窗口 (完整指标), 不再提前返回
+                    os.environ["REROLL_LAST"] = "1" if attempt >= int(os.environ.get("REROLL_MAX") or 3) else "0"
                     rec = arm_layer(a, out, aname, k, note, lambda w, n, _k: locked(w, n, k_str))
                     attempt += 1
                     if not (rec.get("reroll") and attempt <= int(os.environ.get("REROLL_MAX") or 3)):
@@ -1256,6 +1260,7 @@ def main():
                     dropped.append({"attempt": attempt, "took_s": round(time.time() - t_arm_start, 1),
                                     **(rec.get("reroll_probe") or {})})
                     note(f"{aname}: 呈现症状档 (探测 {rec.get('reroll_probe')}), 丢弃重掷 (第 {attempt} 次)")
+                os.environ.pop("REROLL_LAST", None)
                 if dropped:
                     rec["reroll_dropped"] = dropped
                     rec["reroll_attempts"] = attempt
