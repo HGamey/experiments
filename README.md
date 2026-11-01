@@ -5,6 +5,7 @@
 ## 目录
 
 - `selfsr/`：自研超分与插帧 A/B（BH3GEI）。`gray/` 是实验版本的灰档层，`repro.sh` 现编现用。报告在 [HGamey/docs](https://github.com/HGamey/docs) 的 `experiments/2026-10-24-selfsr`。
+- `imgscale/`：宿主 CPU 放大方法基准（截图缩半再放大，PSNR/SSIM/耗时），纯标准库。
 - `gfrc/`：厂商 G-FRC+ 对照 A/B。
 - `npu_exp/`：原神 NPU 超分三臂对照（N3，BH3GEI）。层和模型取自作者机器上的 N1 产物，在别处跑要给 `--layer-so` 和 `--model`。报告在 HGamey/docs 的 `experiments/2026-10-20-npu-sr`。
 - `o2_dvfs/`、`repro/`：O2 DVFS 扫描与复现打包。`repro/pack_repro.py` 生成的脚本仍假定在 phonefarm 老位置运行。
