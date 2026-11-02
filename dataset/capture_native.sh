@@ -5,7 +5,8 @@
 #           experiment dataset/capture_native.sh <serial> FRAMES=300
 #   (写了 --device-access write 必须同时给 --resource device:<serial>, 否则平台按全局预留, 占住所有手机)
 # KEY: CAPTURER (缺省 cruise: phonefarm onboard 冷启动进大世界, 再由 cruise.py 触屏转视角+走位+screencap;
-#      phonefarm = phonefarm capture 自带巡航, 节点版本 219e7b91 上其 worker 缺 PHONEFARM_WORKER_TOKEN 直接崩, 暂不可用)
+#      phonefarm = phonefarm capture 自带巡航, 靠虚拟 Xbox 手柄 (adb shell hid) 输入; worker 崩溃已在平台 83d1a44 起修复,
+#      但在当前 root 测试机上内核不给该 UHID 设备绑定输入驱动, 手柄注册不上, 采集停在 hid_register, 所以缺省仍用 cruise)
 #      FRAMES (目标保留帧, 缺省 300) SETTLE_MS (每步后等待, 缺省 800) WALK_MS (cruise 每步推摇杆毫秒, 缺省 4000)
 #      SEED (cruise 随机种子, 缺省 0) MODE (phonefarm 用, 缺省 navigate) TIMEOUT_S (缺省 5400) MAX_STEPS (phonefarm 用)
 # 产物 ($PF_JOB_OUT/dataset_capture_<时间>/):
