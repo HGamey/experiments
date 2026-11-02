@@ -3,7 +3,7 @@
 
     python3 -I dataset/make_pairs.py <capture 输出目录> --out <数据集根> [--name gi-sim] [--version 0] [--batch gi-YYYYMMDD-01]
         [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr]
-        [--no-preview]
+        [--exclude 排除清单] [--no-preview]
 
 输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json)。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
@@ -12,7 +12,8 @@
   LR 只存配方 (§2.2), --write-lr 才落盘。
 QA (§3.8, 规则沿用 SPEC_SR_LOOP §4.1, 倍率换成约 1.42):
   1 完整性: 文件字节数 / sha256 / 尺寸与 manifest 一致, 否则整段作废;
-  2 有效画面: state=explore、横屏、非 ready_only、非冻结 (diff_prev >= 1.0), 再丢近乎纯色帧 (加载/黑屏);
+  2 有效画面: --exclude 人工排除的帧 (菜单/对话/加载页), state=explore、横屏、非 ready_only、非冻结 (diff_prev >= 1.0),
+    再丢近乎纯色帧 (加载/黑屏);
   3 对齐: bicubic(LR)→HR 尺寸, 中央区 (0.20,0.15)-(0.80,0.80) 相位相关 + 三点抛物线亚像素, |dx|,|dy| > 0.25 px 整帧丢;
   4 切块: HR 上 --tile 网格, 与 HUD 排除区相交的块记为 hud (单独标注, 不进训练块);
   5 场景块逐块 bicubic 重建 PSNR (RGB 联合 MSE) > --psnr-min 才保留;
@@ -192,9 +193,19 @@ def main():
     ap.add_argument("--breaker", type=float, default=0.05)
     ap.add_argument("--test-segments", type=int, default=None, help="路线末尾留作 test 的段数, 缺省 max(1, 段数的 10%%)")
     ap.add_argument("--write-lr", action="store_true", help="模拟 LR 也落盘 (缺省只存配方)")
+    ap.add_argument("--exclude", default=None,
+                    help="人工看图排除的帧: 每行 <帧号或 a-b> <原因>, # 开头为注释 (菜单/对话/加载页等, §3.8 有效画面)")
     ap.add_argument("--no-preview", action="store_true", help="不出 preview/ (接触表与 HR/LR/bicubic 裁剪对比)")
     a = ap.parse_args()
     frames_dir, rows, batch = find_capture(a.src)
+    excluded = {}
+    for line in open(a.exclude, encoding="utf-8") if a.exclude else []:
+        line = line.split("#", 1)[0].strip()
+        if line:
+            rng, _, why = line.partition(" ")
+            lo, _, hi = rng.partition("-")
+            for i in range(int(lo), int(hi or lo) + 1):
+                excluded[i] = why.strip() or "manual"
     if not rows:
         sys.exit("manifest 为空")
     (hw, hh), (lw, lh), t = a.hr_size, a.lr_size, a.tile
@@ -239,7 +250,7 @@ def main():
         split_of[s] = ("test" if s in test_segs else "guard" if s in guard_segs
                        else "val" if s % VAL_MOD == VAL_REM else "train")
 
-    drops = {"integrity_segment": 0, "state": 0, "portrait": 0, "ready_only": 0, "frozen": 0, "flat": 0, "align": 0}
+    drops = {"integrity_segment": 0, "excluded": 0, "state": 0, "portrait": 0, "ready_only": 0, "frozen": 0, "flat": 0, "align": 0}
     tile_grid = tiles(hw, hh, t)
     scene_tiles = [(x, y) for x, y, hit in tile_grid if not hit]
     counts = {"scene_tiles_available": 0, "scene_tiles_psnr_drop": 0, "scene_tiles_align_drop": 0,
@@ -250,6 +261,9 @@ def main():
     for r in rows:
         if r["segment"] in bad_seg:
             drops["integrity_segment"] += 1
+            continue
+        if r["i"] in excluded:
+            drops["excluded"] += 1
             continue
         if r.get("ready_only"):
             drops["ready_only"] += 1
@@ -323,7 +337,8 @@ def main():
         return round(float(np.mean(v)), 4) if v else None
     baseline = {s: {m: {k: mean(v) for k, v in d.items()} for m, d in base[s].items()} for s in base}
     qa = {"schema": "hgamey/dataset-qa@1", "dataset": f"{a.name}-v{a.version}", "batch": batch_id, "published": published,
-          "rows": len(rows), "frames_kept": len(frames), "frame_drops": drops, "integrity_failures": integrity,
+          "rows": len(rows), "frames_kept": len(frames), "frame_drops": drops,
+          "excluded": [{"frame": i, "reason": w} for i, w in sorted(excluded.items()) if any(r["i"] == i for r in rows)], "integrity_failures": integrity,
           "tiles": counts, "drop_ratio": round(drop_ratio, 5), "breaker": a.breaker, "psnr_min": a.psnr_min,
           "align_max_px": ALIGN_MAX_PX, "tile": a.tile, "tiles_per_frame": {"scene": len(scene_tiles), "hud": len(tile_grid) - len(scene_tiles)},
           "tile_psnr_bicubic": {"min": round(min(tile_psnrs), 3) if tile_psnrs else None, "mean": mean(tile_psnrs),
