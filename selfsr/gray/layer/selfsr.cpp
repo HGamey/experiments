@@ -114,7 +114,8 @@ std::mutex g_m;
 bool g_on = false;
 uint32_t g_want_w = 0, g_want_h = 0;
 float g_sharp = 0.f;                        // RCAS 强度, 0 = 不锐化
-int g_algo = 1;                             // debug.knobs.selfsr_algo: lanczos (Lanczos2 4x4) | cr (缺省, Catmull-Rom 9 次双线性取样)
+int g_algo = 1;                             // debug.knobs.selfsr_algo: lanczos (Lanczos2 4x4) | cr (缺省, Catmull-Rom 9 次双线性取样) | sgsr1 | fsr1
+const char* algo_name() { static const char* n[] = {"lanczos", "cr", "sgsr1", "fsr1"}; return n[g_algo]; }
 bool g_direct_ok = false;                   // debug.knobs.selfsr_direct=1 才直写 swapchain (加 STORAGE 用途可能关掉 UBWC 压缩)
 std::vector<uint64_t> g_gpu_us;             // 层自己的命令在 GPU 上的耗时 (时间戳差, 最近 1024 个)
 std::map<void*, Dev*> g_devs;
@@ -282,9 +283,9 @@ bool sr_init_from_props() {
         char a[PROP_VALUE_MAX] = {0}, d[PROP_VALUE_MAX] = {0};
         __system_property_get("debug.knobs.selfsr_algo", a);
         __system_property_get("debug.knobs.selfsr_direct", d);
-        g_algo = !strcmp(a, "lanczos") ? 0 : (!strcmp(a, "sgsr1") ? 2 : 1);   // 缺省 cr: 真机层自身 GPU 2.2 ms vs lanczos 4.4 ms, 离线画质持平; sgsr1 = Qualcomm SGSR1 mobile 移植 (algo=2, 跳过 RCAS)
+        g_algo = !strcmp(a, "lanczos") ? 0 : (!strcmp(a, "sgsr1") ? 2 : (!strcmp(a, "fsr1") ? 3 : 1));   // 缺省 cr: 真机层自身 GPU 2.2 ms vs lanczos 4.4 ms, 离线画质持平; sgsr1 = Qualcomm SGSR1 mobile 移植 (algo=2, 跳过 RCAS); fsr1 = AMD FSR1 EASU 移植 (algo=3, 后接 RCAS)
         g_direct_ok = d[0] == '1';
-        SR_LOG("开启: 送显分辨率 %ux%u 锐化 %.2f 算法 %s 直写 %d", w, h, g_sharp, g_algo == 2 ? "sgsr1" : (g_algo ? "cr" : "lanczos"), (int)g_direct_ok);
+        SR_LOG("开启: 送显分辨率 %ux%u 锐化 %.2f 算法 %s 直写 %d", w, h, g_sharp, algo_name(), (int)g_direct_ok);
     }
     return g_on;
 }
@@ -594,6 +595,6 @@ std::string sr_json() {
              (unsigned long long)g_same_size, (unsigned long long)g_passthrough, (unsigned long long)g_direct_frames, g_reason.c_str(), pct(0.5), pct(0.95));
     char g2[160];
     snprintf(g2, sizeof g2, ",\"gpu_us_p50\":%llu,\"gpu_us_p95\":%llu,\"gpu_samples\":%zu,\"algo\":\"%s\"", gp(0.5), gp(0.95),
-             gg.size(), g_algo == 2 ? "sgsr1" : (g_algo ? "cr" : "lanczos"));
+             gg.size(), algo_name());
     return std::string(b) + fb + "}" + g2 + "}";
 }

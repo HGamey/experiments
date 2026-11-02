@@ -6,8 +6,9 @@
 #   sr    native vs sr:0.56:2141x969:0.8            低分辨率 + 我们的超分 (第 3 组配方, 同一低分输入)
 #   srip  native vs srip:1:$SR_FULL:bm:120:$IP_TUNE 第 7 组推荐配置 (超分+插帧)
 #   gsr   native vs sr:0.56:$SR_OUT:algo=sgsr1        低分辨率 + SGSR1 (官方开源移植, 层内 algo=2; 需要 sgsr1 层版本)
+#   fsr   native vs sr:0.56:$FSR_OUT:algo=fsr1        低分辨率 + FSR1 EASU+RCAS (层内 algo=3; FSR_OUT 缺省 2141x969:0.871 = FSR 缺省 0.2 stops)
 # KEY: ROUNDS (配对数, 缺省 1) WINDOW (测量窗口秒, 缺省 10) VIDEO (每臂窗口后录屏秒, 缺省 20; 0=不录)
-#      SETS SR_FULL (缺省 <屏幕>:1.0) SR_OUT (缺省 2141x969:0.8) COOL_MAX (缺省 42) PKG (缺省原神)
+#      SETS SR_FULL (缺省 <屏幕>:1.0) SR_OUT (缺省 2141x969:0.8) FSR_OUT (缺省 2141x969:0.871) COOL_MAX (缺省 42) PKG (缺省原神)
 #      HOLD_KEEP (同上) POWER (1 = 窗口内停充采整机功耗+电池温度, 高通机+root; 报温度必开)
 #      SF_ATRACE (1 = 每臂窗口后抓 3s SF atrace: fence unsignal/整帧跳过/缓冲被顶掉; 呈现节律根因排查用)
 #      REROLL (1 = srip 臂窗口前探测子图层节律, 90fps 症状档则丢弃冷启动重掷; REROLL_MAX 缺省 3 次重掷)
@@ -17,7 +18,7 @@ set -eu
 n=$#
 for arg in "$@"; do
   case "$arg" in
-    ROUNDS=*|WINDOW=*|VIDEO=*|SETS=*|SR_FULL=*|SR_OUT=*|IP_TUNE=*|COOL_MAX=*|PKG=*|HOLD_KEEP=*|POWER=*|SF_ATRACE=*|REROLL=*|REROLL_MAX=*) export "$arg" ;;
+    ROUNDS=*|WINDOW=*|VIDEO=*|SETS=*|SR_FULL=*|SR_OUT=*|FSR_OUT=*|IP_TUNE=*|COOL_MAX=*|PKG=*|HOLD_KEEP=*|POWER=*|SF_ATRACE=*|REROLL=*|REROLL_MAX=*) export "$arg" ;;
     *) set -- "$@" "$arg" ;;
   esac
 done
@@ -32,6 +33,7 @@ PKG="${PKG:-com.miHoYo.Yuanshen}"
 PANEL=$(adb -s "$SERIAL" shell wm size | tr -d '\r' | sed -n 's/.*: *\([0-9]*\)x\([0-9]*\)$/\1 \2/p' | tail -1 | awk '{print ($1>$2)?$1"x"$2:$2"x"$1}')
 SR_FULL="${SR_FULL:-$PANEL:1.0}"
 SR_OUT="${SR_OUT:-2141x969:0.8}"
+FSR_OUT="${FSR_OUT:-2141x969:0.871}"
 # 第 7 组插帧参数 (带 waitframe 的红魔: 子图层起游戏图层名绕开 waitframe)
 IP_TUNE="${IP_TUNE:-stamp=0,panel=120,backend=sc,lead_ns=25000000,unlimit=1,sc_name=auto}"
 COOL_MAX="${COOL_MAX:-42}"
@@ -61,9 +63,10 @@ for g in $SETS; do
   case $g in
     hwc)  run hwc_bilinear native "hwc:0.56" ;;
     gsr)  run gsr_sgsr1     native "sr:0.56:${SR_OUT}:algo=sgsr1" ;;
+    fsr)  run fsr_fsr1      native "sr:0.56:${FSR_OUT}:algo=fsr1" ;;
     sr)   run sr_lowres    native "sr:0.56:${SR_OUT}" ;;
     srip) run srip_g7      native "srip:1:${SR_FULL}:bm:120:${IP_TUNE}" ;;
-    *) echo "不认识的组: $g (可选 hwc sr srip)"; exit 2 ;;
+    *) echo "不认识的组: $g (可选 hwc sr srip gsr fsr)"; exit 2 ;;
   esac
 done
 echo "输出: $OUT"
