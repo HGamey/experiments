@@ -10,7 +10,7 @@ layout(push_constant) uniform PC {
     ivec2 in_size;
     ivec2 out_size;
     float sharp;
-    int algo;   // 0 = Lanczos2 (16 次 texelFetch + 2x2 去振铃), 1 = Catmull-Rom (9 次硬件双线性取样, 不算 sin)
+    int algo;   // 0 = Lanczos2 (16 次 texelFetch + 2x2 去振铃), 1 = Catmull-Rom (9 次硬件双线性取样, 不算 sin), 2 = SGSR1, 3 = FSR1 EASU
 } pc;
 
 shared vec3 tile[18][18];
@@ -116,13 +116,86 @@ vec3 upscale_sgsr1(ivec2 o) {
     return clamp(base + vec3(dy), 0.0, 1.0);
 }
 
+// FSR1 EASU (AMD FidelityFX FSR 1.0 ffx_fsr1.h 的 FsrEasuF 32 位路径逐式移植, MIT; 与 selfsr/fsr1.py 一致):
+// f 周围 12 tap (b c / e f g h / i j k l / n o), 亮度 L = 0.5R + G + 0.5B; 4 个双线性象限累加梯度方向与边缘度,
+// 按方向旋转、各向异性拉伸的近似 Lanczos2 权重加权, 再钳到 f/g/j/k 的 min/max。后面照常走 RCAS (algo=3 不跳过),
+// 锐化强度由 sharp 给 (FSR 缺省 0.2 stops = 0.871)。近似倒数/开方用精确运算代替。
+vec3 easu_rgb(ivec2 p) { return texelFetch(src, clamp(p, ivec2(0), pc.in_size - 1), 0).rgb; }
+float easu_l(vec3 c) { return c.r * 0.5 + c.g + c.b * 0.5; }
+
+void easu_set(inout vec2 dir, inout float len, float w, float la, float lb, float lc, float ld, float le) {
+    float dc = ld - lc, cb = lc - lb;
+    float lx = max(abs(dc), abs(cb));
+    float dx = ld - lb;
+    lx = lx > 0.0 ? clamp(abs(dx) / lx, 0.0, 1.0) : 0.0;
+    float ec = le - lc, ca = lc - la;
+    float ly = max(abs(ec), abs(ca));
+    float dy = le - la;
+    ly = ly > 0.0 ? clamp(abs(dy) / ly, 0.0, 1.0) : 0.0;
+    dir += vec2(dx, dy) * w;
+    len += (lx * lx + ly * ly) * w;
+}
+
+void easu_tap(inout vec3 acc, inout float aw, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c) {
+    vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x))) * len2;
+    float d2 = min(dot(v, v), clp);
+    float wb = 0.4 * d2 - 1.0, wa = lob * d2 - 1.0;
+    wb = 25.0 / 16.0 * wb * wb - (25.0 / 16.0 - 1.0);
+    float w = wb * wa * wa;
+    acc += c * w;
+    aw += w;
+}
+
+vec3 upscale_easu(ivec2 o) {
+    vec2 pp = (vec2(o) + 0.5) * vec2(pc.in_size) / vec2(pc.out_size) - 0.5;
+    ivec2 fp = ivec2(floor(pp));
+    pp -= vec2(fp);
+    vec3 cb = easu_rgb(fp + ivec2(0, -1)), cc = easu_rgb(fp + ivec2(1, -1));
+    vec3 ce = easu_rgb(fp + ivec2(-1, 0)), cf = easu_rgb(fp), cg = easu_rgb(fp + ivec2(1, 0)), ch = easu_rgb(fp + ivec2(2, 0));
+    vec3 ci = easu_rgb(fp + ivec2(-1, 1)), cj = easu_rgb(fp + ivec2(0, 1)), ck = easu_rgb(fp + ivec2(1, 1)), cl = easu_rgb(fp + ivec2(2, 1));
+    vec3 cn = easu_rgb(fp + ivec2(0, 2)), co = easu_rgb(fp + ivec2(1, 2));
+    float lb = easu_l(cb), lc = easu_l(cc), le = easu_l(ce), lf = easu_l(cf), lg = easu_l(cg), lh = easu_l(ch);
+    float li = easu_l(ci), lj = easu_l(cj), lk = easu_l(ck), ll = easu_l(cl), ln = easu_l(cn), lo = easu_l(co);
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    easu_set(dir, len, (1.0 - pp.x) * (1.0 - pp.y), lb, le, lf, lg, lj);
+    easu_set(dir, len, pp.x * (1.0 - pp.y), lc, lf, lg, lh, lk);
+    easu_set(dir, len, (1.0 - pp.x) * pp.y, lf, li, lj, lk, ln);
+    easu_set(dir, len, pp.x * pp.y, lg, lj, lk, ll, lo);
+    float dr = dot(dir, dir);
+    bool zro = dr < 1.0 / 32768.0;
+    dir = zro ? vec2(1.0, dir.y) : dir * inversesqrt(dr);   // zro 时 y 不缩放, 与 ffx_fsr1.h 一致
+    len = len * 0.5;
+    len *= len;
+    float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+    vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lob = 0.5 + (0.25 - 0.04 - 0.5) * len;
+    float clp = 1.0 / lob;
+    vec3 acc = vec3(0.0);
+    float aw = 0.0;
+    easu_tap(acc, aw, vec2(0.0, -1.0) - pp, dir, len2, lob, clp, cb);
+    easu_tap(acc, aw, vec2(1.0, -1.0) - pp, dir, len2, lob, clp, cc);
+    easu_tap(acc, aw, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, ci);
+    easu_tap(acc, aw, vec2(0.0, 1.0) - pp, dir, len2, lob, clp, cj);
+    easu_tap(acc, aw, vec2(0.0, 0.0) - pp, dir, len2, lob, clp, cf);
+    easu_tap(acc, aw, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, ce);
+    easu_tap(acc, aw, vec2(1.0, 1.0) - pp, dir, len2, lob, clp, ck);
+    easu_tap(acc, aw, vec2(2.0, 1.0) - pp, dir, len2, lob, clp, cl);
+    easu_tap(acc, aw, vec2(2.0, 0.0) - pp, dir, len2, lob, clp, ch);
+    easu_tap(acc, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, cg);
+    easu_tap(acc, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, co);
+    easu_tap(acc, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, cn);
+    vec3 mn4 = min(min(cf, cg), min(cj, ck)), mx4 = max(max(cf, cg), max(cj, ck));
+    return clamp(acc / aw, mn4, mx4);
+}
+
 void main() {
     ivec2 base = ivec2(gl_WorkGroupID.xy) * 16 - 1;   // tile[0][0] 对应的输出坐标
     uint lid = gl_LocalInvocationIndex;
     for (uint k = lid; k < 18u * 18u; k += 256u) {
         ivec2 t = ivec2(int(k % 18u), int(k / 18u));
         ivec2 q = clamp(base + t, ivec2(0), pc.out_size - 1);
-        tile[t.y][t.x] = pc.algo == 1 ? upscale_cr(q) : (pc.algo == 2 ? upscale_sgsr1(q) : upscale(q));
+        tile[t.y][t.x] = pc.algo == 1 ? upscale_cr(q) : (pc.algo == 2 ? upscale_sgsr1(q) : (pc.algo == 3 ? upscale_easu(q) : upscale(q)));
     }
     barrier();
     ivec2 o = ivec2(gl_GlobalInvocationID.xy);
