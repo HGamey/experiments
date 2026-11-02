@@ -82,7 +82,7 @@
 
 - **入口：** `selfsr/repro.sh <serial> [配对数=6] [输出目录] [包名]`，每组是冷启动 ABBA 加精确符号翻转检验。
   - 单组直接用 `selfsr/selfsr_ab.py run --a <臂> --b <臂> --rounds 6`。
-  - 平台上：`pf-node --experiment main --research <ID> --device-access write --detach experiment selfsr/repro.sh <serial> 6`。
+  - 平台上：`pf-node --experiment main --research <ID> --device-access write --resource device:<serial> --detach experiment selfsr/repro.sh <serial> 6`。
 - **常用环境变量：**
   - `SETS`：选组；
   - `WINDOW`：测量窗口，缺省 10 s，测功耗用 30；
