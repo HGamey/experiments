@@ -1,6 +1,9 @@
 #!/bin/sh
 # 方法 C 原料采集 (DATASET-COLLECTION §3.3): 原神大世界巡航截原生帧, 附整批设备/游戏元数据。
 #   sh dataset/capture_native.sh <serial> [KEY=VALUE ...]
+# 平台上: pf-node --experiment <提交> --research <研究ID> --device-access write --resource device:<serial> --detach \
+#           experiment dataset/capture_native.sh <serial> FRAMES=300
+#   (写了 --device-access write 必须同时给 --resource device:<serial>, 否则平台按全局预留, 占住所有手机)
 # KEY: CAPTURER (缺省 cruise: phonefarm onboard 冷启动进大世界, 再由 cruise.py 触屏转视角+走位+screencap;
 #      phonefarm = phonefarm capture 自带巡航, 节点版本 219e7b91 上其 worker 缺 PHONEFARM_WORKER_TOKEN 直接崩, 暂不可用)
 #      FRAMES (目标保留帧, 缺省 300) SETTLE_MS (每步后等待, 缺省 800) WALK_MS (cruise 每步推摇杆毫秒, 缺省 4000)
