@@ -3,6 +3,7 @@
 
     python3 -I dataset/make_pairs.py <capture 输出目录> --out <数据集根> [--name gi-sim] [--version 0] [--batch gi-YYYYMMDD-01]
         [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr]
+        [--no-preview]
 
 输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json)。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
@@ -19,7 +20,9 @@ QA (§3.8, 规则沿用 SPEC_SR_LOOP §4.1, 倍率换成约 1.42):
 划分 (§3.9, 按 segment, 同段不跨集): 路线末尾连续 --test-segments 段为 test, 其前 1 段为 guard (丢弃, 隔开相邻帧),
   其余 segment % 5 == 4 为 val, 剩下 train。基线锁定: val/test 场景块上双线性、bicubic 的 PSNR / SSIM 均值。
 输出 (§3.10): <out>/<name>-v<version>/{manifest.json, split.json, qa_report.json,
-  batches/<batch>/seg<NNN>/{hr/f<10 位帧号>.png, lr/..., meta.json}}。退出码 0 发布, 2 用法/输入错, 3 熔断。
+  batches/<batch>/seg<NNN>/{hr/f<10 位帧号>.png, lr/..., meta.json}, preview/ (展示用接触表与裁剪对比)}。
+  冻结判定: manifest 的 diff_prev 为 null 时 (cruise 采集) 离线按 64x36 灰度缩略图平均差与上一保留帧比。
+  退出码 0 发布, 2 用法/输入错, 3 熔断。
 """
 import argparse
 import datetime
@@ -106,6 +109,65 @@ def tiles(w, h, t):
     return out
 
 
+def derive(src, a):
+    """HR = 截图 LANCZOS 到 --hr-size, LR = HR BOX 到 --lr-size (确定性, 发布时按原件重算, 不在内存里囤整批)。"""
+    hr = src.resize(a.hr_size, Image.LANCZOS)
+    return hr, hr.resize(a.lr_size, Image.BOX)
+
+
+def label(img, text):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, 8 + 7 * len(text), 16), fill=(0, 0, 0))
+    d.text((4, 2), text, fill=(255, 255, 255))
+    return img
+
+
+def previews(root, items, a, n_sheet=24, n_crop=4, crop=(240, 160), zoom=2):
+    """展示用 (不进清单): contact_sheet.jpg (均匀取 n_sheet 张 HR 缩略图) 与 crop_NN.png (HR | LR 最近邻放大 | bicubic)。
+    items: [(HR 路径, 标签)], LR 由 HR (无损 PNG) 按同一 BOX 核重算。裁剪框取该帧场景块里梯度能量最高的块中心。"""
+    pdir = os.path.join(root, "preview")
+    os.makedirs(pdir, exist_ok=True)
+    if not items:
+        return {}
+    pick = [items[round(i * (len(items) - 1) / max(1, n_sheet - 1))] for i in range(min(n_sheet, len(items)))]
+    tw, th = 356, round(356 * a.hr_size[1] / a.hr_size[0])
+    cols = 4
+    sheet = Image.new("RGB", (cols * tw, -(-len(pick) // cols) * th), (0, 0, 0))
+    for k, (hp, lab) in enumerate(pick):
+        im = Image.open(hp).convert("RGB").resize((tw, th), Image.BILINEAR)
+        sheet.paste(label(im, lab), ((k % cols) * tw, (k // cols) * th))
+    sheet.save(os.path.join(pdir, "contact_sheet.jpg"), quality=88)
+    crops = []
+    cw, ch = crop
+    sx, sy = a.lr_size[0] / a.hr_size[0], a.lr_size[1] / a.hr_size[1]
+    for k in range(min(n_crop, len(items))):
+        hp, lab = items[round((k + 0.5) * len(items) / n_crop - 0.5)]
+        hr = Image.open(hp).convert("RGB")
+        lr = hr.resize(a.lr_size, Image.BOX)
+        g = np.asarray(hr.convert("L"), dtype=np.float64)
+        e = np.abs(np.diff(g, axis=0))[:, :-1] + np.abs(np.diff(g, axis=1))[:-1, :]
+        best = max(((x, y) for x, y, hit in tiles(*a.hr_size, a.tile) if not hit),
+                   key=lambda p: e[p[1]:p[1] + a.tile, p[0]:p[0] + a.tile].mean(), default=(0, 0))
+        x0 = max(0, min(a.hr_size[0] - cw, best[0] + a.tile // 2 - cw // 2))
+        y0 = max(0, min(a.hr_size[1] - ch, best[1] + a.tile // 2 - ch // 2))
+        box = (x0, y0, x0 + cw, y0 + ch)
+        lbox = tuple(round(v * s) for v, s in zip(box, (sx, sy, sx, sy)))
+        bic = lr.resize(a.hr_size, Image.BICUBIC).crop(box)
+        panels = [("HR " + lab, hr.crop(box)), ("LR %dx%d (nearest)" % a.lr_size, lr.crop(lbox).resize((cw, ch), Image.NEAREST)),
+                  ("bicubic %.2f dB" % psnr(np.asarray(bic), np.asarray(hr.crop(box))), bic)]
+        out = Image.new("RGB", (3 * cw * zoom + 2 * 6, ch * zoom), (255, 255, 255))
+        for j, (t, im) in enumerate(panels):
+            out.paste(label(im.resize((cw * zoom, ch * zoom), Image.NEAREST), t), (j * (cw * zoom + 6), 0))
+        name = f"crop_{k + 1:02d}.png"
+        out.save(os.path.join(pdir, name))
+        crops.append({"file": name, "frame": lab, "hr_box": list(box), "lr_box": list(lbox)})
+    meta = {"contact_sheet": "contact_sheet.jpg", "sheet_frames": [p[1] for p in pick], "crops": crops,
+            "note": "展示用, 不属于数据集; LR 面板为最近邻放大, 只看像素量"}
+    json.dump(meta, open(os.path.join(pdir, "preview.json"), "w"), ensure_ascii=False, indent=1)
+    return meta
+
+
 def find_capture(src):
     ms = sorted(glob.glob(os.path.join(src, "**", "manifest.jsonl"), recursive=True))
     if len(ms) != 1:
@@ -130,6 +192,7 @@ def main():
     ap.add_argument("--breaker", type=float, default=0.05)
     ap.add_argument("--test-segments", type=int, default=None, help="路线末尾留作 test 的段数, 缺省 max(1, 段数的 10%%)")
     ap.add_argument("--write-lr", action="store_true", help="模拟 LR 也落盘 (缺省只存配方)")
+    ap.add_argument("--no-preview", action="store_true", help="不出 preview/ (接触表与 HR/LR/bicubic 裁剪对比)")
     a = ap.parse_args()
     frames_dir, rows, batch = find_capture(a.src)
     if not rows:
@@ -183,6 +246,7 @@ def main():
               "scene_tiles_kept": 0, "hud_tiles": 0}
     frames, base = [], {s: {"bilinear": {"psnr": [], "ssim": []}, "bicubic": {"psnr": [], "ssim": []}} for s in ("val", "test")}
     tile_psnrs = []
+    prev_thumb = None
     for r in rows:
         if r["segment"] in bad_seg:
             drops["integrity_segment"] += 1
@@ -200,8 +264,13 @@ def main():
             drops["frozen"] += 1
             continue
         src = Image.open(os.path.join(frames_dir, r["file"])).convert("RGB")
-        hr_img = src.resize((hw, hh), Image.LANCZOS)
-        lr_img = hr_img.resize((lw, lh), Image.BOX)
+        if r.get("diff_prev") is None:   # 采集端没算 (cruise): 离线按同一定义算, 与上一保留帧比
+            th = np.asarray(src.convert("L").resize((64, 36), Image.BILINEAR), dtype=np.float64)
+            if prev_thumb is not None and np.abs(th - prev_thumb).mean() < DUP_THRESH:
+                drops["frozen"] += 1
+                continue
+            prev_thumb = th
+        hr_img, lr_img = derive(src, a)
         hr = np.asarray(hr_img)
         if hr.astype(np.float64).mean(axis=2).std() < FLAT_STD:
             drops["flat"] += 1
@@ -236,7 +305,7 @@ def main():
         if split != "guard":
             counts["scene_tiles_psnr_drop"] += len(dropped)
             counts["scene_tiles_kept"] += len(kept)
-        frames.append({"r": r, "hr": hr_img, "lr": lr_img, "split": split, "align": [round(dx, 4), round(dy, 4)],
+        frames.append({"r": r, "split": split, "align": [round(dx, 4), round(dy, 4)],
                        "tiles": kept, "tiles_dropped": dropped, "luma_mean": round(float(hr.mean()), 2),
                        "psnr_full_bicubic": round(psnr(bic, hr), 3)})
         print(f"{r['file']} seg{r['segment']:03d} {split:5s} 对齐 ({dx:+.3f},{dy:+.3f}) 块 {len(kept)}/{len(scene_tiles)}",
@@ -270,10 +339,11 @@ def main():
     src_meta = {k: batch.get(k) for k in ("node_id", "job_id", "experiment_commit", "research", "package", "version_name",
                                           "version_code", "fingerprint", "android", "platform", "gles", "screen", "render_size",
                                           "graphics_prefs")}
-    index = []
+    index, shown = [], []
     frames = [f for f in frames if f["split"] != "guard"]   # guard 段只隔开 test, 不落盘
     for f in frames:
         r, seg = f["r"], f["r"]["segment"]
+        f["hr"], f["lr"] = derive(Image.open(os.path.join(frames_dir, r["file"])).convert("RGB"), a)
         scene = f"seg{seg:03d}"
         d = os.path.join(root, "batches", batch_id, scene)
         os.makedirs(os.path.join(d, "hr"), exist_ok=True)
@@ -289,6 +359,8 @@ def main():
             files["lr"] = {"file": f"lr/{name}", "bytes": os.path.getsize(lp), "sha256": sha256_file(lp)}
         else:
             files["lr"] = None
+        shown.append((hp, f"seg{seg:03d} f{r['i']} {f['split']}"))
+        f.pop("hr"), f.pop("lr")
         index.append({
             "source": dict(src_meta, batch=batch_id, scene=scene, frame=r["i"], kind="hr_downsampled",
                            capture_method="screencap", ts_ms=r["ts_ms"], step=r["step"]),
@@ -316,6 +388,8 @@ def main():
                "frames": [{"path": e["path"], "split": e["split"], "segment": f["r"]["segment"],
                            "tiles": [[tt["x"], tt["y"]] for tt in f["tiles"]]} for e, f in zip(index, frames)]},
               open(os.path.join(root, "split.json"), "w"), ensure_ascii=False, indent=1)
+    if not a.no_preview:
+        previews(root, shown, a)
     print(json.dumps({"dataset": root, "frames": len(frames), "splits": {s: (v["frames"], v["tiles"]) for s, v in split_n.items()},
                       "drop_ratio": qa["drop_ratio"], "baseline": baseline}, ensure_ascii=False))
     return 0
