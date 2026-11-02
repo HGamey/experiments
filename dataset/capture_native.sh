@@ -129,6 +129,11 @@ for p in sorted(glob.glob(os.path.join(out, "sf_*.txt"))):
                     l, t, r, b = map(float, m.groups())
                     render.append({"probe": os.path.basename(p), "w": round(r - l), "h": round(b - t)})
                     break
+    # 新版 dumpsys 没有 HWC Source Crop 表时, 退回游戏 SurfaceView 的 BLAST 缓冲宽高 (GraphicBufferAllocator 列表)
+    if not any(r["probe"] == os.path.basename(p) for r in render):
+        for m in re.finditer(r"SurfaceView\[" + re.escape(pkg) + r"[^\n]*BLAST Consumer[^\n]*?w/h:(\d+)x(\d+)", "\n".join(lines)):
+            render.append({"probe": os.path.basename(p), "w": int(m.group(1)), "h": int(m.group(2)), "from": "blast_buffer"})
+            break
 sizes = sorted({(r["w"], r["h"]) for r in render})
 same = {k: before.get(k) == after.get(k) for k in ("graphics_prefs", "game_mode_configs", "stayon", "version_code",
                                                      "music_volume")}
