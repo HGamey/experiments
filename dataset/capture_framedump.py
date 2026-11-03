@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """capture_framedump.py — 方法 D 采集 (DATASET-COLLECTION §3.5、§3.7): 一次进游戏, 按运动类型逐段 framedump, 段与段之间走动换地方, 收完再读回转 PNG。
 
-    python3 -I dataset/capture_framedump.py <serial> [--clips 16] [--frames 480] [--walk-s 60] [--stride 30] [--seed 0]
+    python3 -I dataset/capture_framedump.py <serial> [--clips 16] [--frames 420] [--walk-s 60] [--stride 30] [--seed 0]
 平台上: pf-node --experiment <提交> --research <研究ID> --device-access write --resource device:<serial> --detach \\
           experiment dataset/capture_framedump.py <serial> --clips 16
 
@@ -9,8 +9,10 @@
   static     不走不转; 每 2 秒点一下空白处, 否则游戏约 30 帧, 一段会超过 10 秒
   turn_slow  按住慢慢拖视角
   turn_fast  来回快速划视角
-  run        一直推摇杆向前
-段间走动和 cruise.py 一样: 先大转向, 再边小转边走, 碰到溺水/倒下复苏页就点复苏。
+  run        摇杆一直推到底; 开段前先确认画面在动, 否则是撞墙或爬墙
+段间走动和 cruise.py 一样: 先大转向, 再边小转边走, 碰到溺水/倒下复苏页就点复苏。推着摇杆撞到岩壁会爬上去 (gi-sim v0 约四成帧如此), 所以每走一步截图看一次:
+HUD 上没有冲刺键就点松手键掉下来, 再转个大方向走开。
+每段采完趁游戏还开着抽 5 帧核对: 在地上、run 的画面确实在动、static 的画面确实不动; 不过就删掉, 走一段再采, 同一段最多重来 --retries 次。结果写进 clips.json 的 motion_check。
 读回: 手机上的原始帧经 tar 流到节点, 边流边核对 SHA-256、丢掉 alpha、存 PNG, 原始帧不落节点的盘 (一段 480 帧 4 GB, 节点到不了那么多);
 读完这段就删手机上的目录。输出 ($PF_JOB_OUT/fd_capture_<时间>/):
   batch.json restore.json report.json clips.json     clips.json 记每段每帧的帧号、时刻、gap、PNG 和原始帧的哈希
@@ -60,13 +62,49 @@ MOTIONS = ("static", "turn_slow", "turn_fast", "run")
 W, H = 2688, 1216                # 屏幕横屏尺寸, 输入坐标用
 LIMIT_BYTES = 19.5e9             # 节点上这次最多留这么多 PNG (任务上限 20 GB)
 RGB_ORDER = {37: (0, 1, 2), 44: (2, 1, 0)}   # vk_format → R, G, B 在每像素 4 字节里的位置
+DASH_ICON = (0.845, 0.815, 0.895, 0.905)     # 冲刺键, 爬墙时消失
+DROP_TAP = (0.80, 0.77)                      # 爬墙时是松手键, 平时是普攻, 点了无害
+SCENE = (0.25, 0.15, 0.75, 0.80)             # 比运动只看这块, 避开 HUD
+RUN_MIN_DIFF = 2.0                           # 跑着时相隔 0.3 秒以上的两帧, 中央区灰度平均差不小于这个; 试采卡住时是 0.56
+STATIC_MAX_DIFF = 5.0                        # 静止段任意两帧的差不大于这个; 试采是 0.9
 
 
-def adb_input(serial, cmd, wait=True):
-    p = subprocess.Popen(["adb", "-s", serial, "shell", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
-    if wait:
-        p.wait(timeout=60)
-    return p
+def adb_input(serial, cmd):
+    subprocess.run(["adb", "-s", serial, "shell", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, pass_fds=lock_fds())
+
+
+def hold_stick(serial, dx=0.0):
+    """把摇杆一下推到底并按住, 直到 release_stick (input swipe 是匀速滑过去的, 前几秒只算走路)。"""
+    x0, y0, x1, y1 = int(STICK[0] * W), int(STICK[1] * H), int((STICK[0] + dx) * W), int((STICK[1] - 0.13) * H)
+    adb_input(serial, f"input motionevent DOWN {x0} {y0}; input motionevent MOVE {x1} {y1}")
+    return x1, y1
+
+
+def release_stick(serial, at):
+    adb_input(serial, f"input motionevent UP {at[0]} {at[1]}")
+
+
+def look(serial, out):
+    """截一张屏, 返回 (路径, RGB 图)。"""
+    shot = os.path.join(out, "_check.png")
+    with open(shot, "wb") as f:
+        subprocess.run(["adb", "-s", serial, "exec-out", "screencap -p"], stdout=f, timeout=60, pass_fds=lock_fds())
+    return shot, Image.open(shot).convert("RGB")
+
+
+def on_foot(im):
+    """冲刺键在 = 不在爬墙。试采在地上时冲刺键区近白像素占 25%, 爬墙时 0。"""
+    w, h = im.size
+    a = np.asarray(im.crop((int(DASH_ICON[0] * w), int(DASH_ICON[1] * h), int(DASH_ICON[2] * w), int(DASH_ICON[3] * h))))
+    return bool((a.min(axis=2) > 200).mean() > 0.04)
+
+
+def scene_diff(a, b):
+    """两张图中央区的灰度平均差, 尺寸不同也能比。"""
+    def g(im):
+        w, h = im.size
+        return np.asarray(im.crop((int(SCENE[0] * w), int(SCENE[1] * h), int(SCENE[2] * w), int(SCENE[3] * h))).convert("L").resize((240, 130)), float)
+    return round(float(np.abs(g(a) - g(b)).mean()), 2)
 
 
 def swipe_cmd(x0, y0, x1, y1, ms):
@@ -74,7 +112,7 @@ def swipe_cmd(x0, y0, x1, y1, ms):
 
 
 def act(serial, motion, stop, rng):
-    """段内的输入, 直到 stop。"""
+    """static、turn_slow、turn_fast 段内的输入, 直到 stop。"""
     cy = sum(CAM_Y) / 2
     side = rng.choice((-1, 1))
     while not stop.is_set():
@@ -85,42 +123,99 @@ def act(serial, motion, stop, rng):
             a, b = (CAM_X[0], CAM_X[1]) if side > 0 else (CAM_X[1], CAM_X[0])
             adb_input(serial, swipe_cmd(a, cy, b, cy, 9000))
             side = -side
-        elif motion == "turn_fast":
+        else:
             a, b = (CAM_X[0], CAM_X[1]) if side > 0 else (CAM_X[1], CAM_X[0])
             adb_input(serial, swipe_cmd(a, cy, b, cy, 300))
             side = -side
-        else:
-            adb_input(serial, swipe_cmd(STICK[0], STICK[1], STICK[0], STICK[1] - 0.13, 10000))
 
 
-def clear_revive(dev, serial, out, rec):
-    """截一张图看是不是溺水/倒下复苏页, 是就点复苏, 最多等 40 秒。返回 True = 现在不在复苏页。"""
-    shot = os.path.join(out, "_check.png")
+def settle(serial, out, rec):
+    """处理复苏页和爬墙。返回 (现在能动, 这回爬墙了, 截图)。"""
+    climbed = False
     for _ in range(20):
-        with open(shot, "wb") as f:
-            subprocess.run(["adb", "-s", serial, "exec-out", "screencap -p"], stdout=f, timeout=60, pass_fds=lock_fds())
-        if not revive_dialog(shot):
-            return True
-        rec["revives"] = rec.get("revives", 0) + 1
-        adb_input(serial, f"input tap {int(REVIVE_TAP[0] * W)} {int(REVIVE_TAP[1] * H)}")
-        time.sleep(2)
-    return False
+        shot, im = look(serial, out)
+        if revive_dialog(shot):
+            rec["revives"] = rec.get("revives", 0) + 1
+            adb_input(serial, f"input tap {int(REVIVE_TAP[0] * W)} {int(REVIVE_TAP[1] * H)}")
+            time.sleep(2)
+        elif not on_foot(im):
+            climbed = True
+            rec["climbs"] = rec.get("climbs", 0) + 1
+            adb_input(serial, f"input tap {int(DROP_TAP[0] * W)} {int(DROP_TAP[1] * H)}")
+            time.sleep(1.5)
+        else:
+            return True, climbed, im
+    return False, climbed, im
 
 
-def walk(dev, serial, seconds, rng, out, rec):
-    """段间换地方: 先大转向, 再边小转边走。"""
-    t0, turn = time.time(), rng.choice((-1, 1)) * rng.uniform(0.30, 0.55)
+def big_turn(serial, rng):
+    """转开大约半圈, 离开挡住的方向。"""
+    cy = rng.uniform(*CAM_Y)
+    a, b = (0.15, 0.85) if rng.random() < 0.5 else (0.85, 0.15)
+    adb_input(serial, swipe_cmd(a, cy, b, cy, 450))
+
+
+def walk(serial, seconds, rng, out, rec):
+    """段间换地方: 先大转向, 再边小转边走。爬墙、卡住就转开。"""
+    t0, prev = time.time(), None
+    big_turn(serial, rng)
     while time.time() - t0 < seconds:
-        cy, cx = rng.uniform(*CAM_Y), rng.uniform(*CAM_X)
-        x1 = max(0.05, min(0.95, cx + turn))
-        if abs(x1 - cx) > 0.015:
-            adb_input(serial, swipe_cmd(cx, cy, x1, cy, 450))
-        sx, sy, r = STICK[0], STICK[1], 0.13
-        adb_input(serial, swipe_cmd(sx, sy, sx + rng.uniform(-0.03, 0.03), sy - r, 4000))
-        turn = rng.uniform(-0.10, 0.10)
-        if not clear_revive(dev, serial, out, rec):
+        at = hold_stick(serial, rng.uniform(-0.03, 0.03))
+        time.sleep(3.5)
+        release_stick(serial, at)
+        ok, climbed, im = settle(serial, out, rec)
+        if not ok:
             return False
+        if climbed or (prev is not None and scene_diff(prev, im) < RUN_MIN_DIFF):
+            rec["stuck"] = rec.get("stuck", 0) + 1
+            big_turn(serial, rng)
+        else:
+            cy, cx = rng.uniform(*CAM_Y), rng.uniform(*CAM_X)
+            adb_input(serial, swipe_cmd(cx, cy, max(0.05, min(0.95, cx + rng.uniform(-0.10, 0.10))), cy, 450))
+        prev = im
     return True
+
+
+def start_run(serial, rng, out, rec):
+    """按住摇杆直到确认在地上跑起来; 返回按住的坐标, 不让开段就返回 None 并已松手。"""
+    for _ in range(6):
+        at = hold_stick(serial)
+        time.sleep(1.0)
+        a = look(serial, out)[1]
+        time.sleep(0.3)
+        b = look(serial, out)[1]
+        if on_foot(b) and scene_diff(a, b) >= RUN_MIN_DIFF:
+            return at
+        release_stick(serial, at)
+        if not settle(serial, out, rec)[0]:
+            return None
+        rec["stuck"] = rec.get("stuck", 0) + 1
+        big_turn(serial, rng)
+    return None
+
+
+def raw_rgb(data, session):
+    w, h = session["w"], session["h"]
+    return np.frombuffer(data, np.uint8).reshape(h, w, 4)[..., RGB_ORDER[session["vk_format"]]]
+
+
+def check_clip(dev, serial, seg, motion):
+    """趁游戏还开着, 从手机抽 5 帧核对这段名副其实。返回 (通过, 依据)。"""
+    session = json.loads(dev.su(f"cat {seg}/session.json"))
+    names = sorted(x for x in dev.su(f"ls {seg}").split() if x.endswith(".raw"))
+    ims = []
+    for name in names[:: max(1, (len(names) - 1) // 4)][:5]:
+        cmd = shlex.quote(f"cat {seg}/{name}")
+        data = subprocess.run(["adb", "-s", serial, "exec-out", f"su -c {cmd}"], stdout=subprocess.PIPE, timeout=60, pass_fds=lock_fds()).stdout
+        ims.append(Image.fromarray(raw_rgb(data, session)))
+    diffs = [scene_diff(a, b) for a, b in zip(ims, ims[1:])]
+    feet = [on_foot(x) for x in ims]
+    ok = all(feet)
+    if motion == "run":
+        ok = ok and min(diffs) >= RUN_MIN_DIFF
+    elif motion == "static":
+        ok = ok and max(diffs) <= STATIC_MAX_DIFF
+    return ok, {"on_foot": feet, "diffs": diffs, "passed": ok}
 
 
 def convert(data, name, dst, w, h, order, want, check):
@@ -130,7 +225,7 @@ def convert(data, name, dst, w, h, order, want, check):
     if len(data) != w * h * 4:
         return {"name": name, "error": f"raw size {len(data)}"}
     rgba = np.frombuffer(data, np.uint8).reshape(h, w, 4)
-    rgb = rgba[..., order]
+    rgb = rgba[..., order]   # alpha 不全是 255 (最低约 103), 屏幕上不起作用, 丢掉
     png = os.path.join(dst, name[:-4] + ".png")
     Image.fromarray(rgb).save(png, compress_level=6)
     if check and not np.array_equal(np.asarray(Image.open(png).convert("RGB")), rgb):
@@ -191,13 +286,14 @@ def main():
     ap.add_argument("serial")
     ap.add_argument("--pkg", default="com.miHoYo.Yuanshen")
     ap.add_argument("--clips", type=int, default=16)
-    ap.add_argument("--frames", type=int, default=480)
+    ap.add_argument("--frames", type=int, default=420)
     ap.add_argument("--walk-s", type=float, default=60)
     ap.add_argument("--stride", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--session-seconds", type=int, default=3600)
     ap.add_argument("--cool-max", type=float, default=42.0)
     ap.add_argument("--battery-max", type=float, default=48.0, help="电池超过这个温度就不再开新段")
+    ap.add_argument("--retries", type=int, default=2, help="一段没核对过时最多重采几次")
     ap.add_argument("--workers", type=int, default=6)
     a = ap.parse_args()
     rng = random.Random(a.seed)
@@ -220,7 +316,7 @@ def main():
     rec["temps"].append(fp.temps(dev, "before"))
     rec["cool_wait_c"] = ab.wait_batt_temp(dev, a.cool_max, rising=False, max_s=600)
     proc, sdir, st, t_start = None, os.path.join(out, "session"), None, time.time()
-    clips, done_labels = [], []
+    clips, held = [], None
     try:
         dev.shell("input keyevent KEYCODE_WAKEUP; am kill-all")
         dev.shell(f"am force-stop {a.pkg}")
@@ -245,6 +341,8 @@ def main():
         if code != 0:
             raise RuntimeError(f"onboard --no-cold: {err}")
         time.sleep(20)   # 等加载动画和公告淡出
+        global W, H
+        W, H = look(a.serial, out)[1].size
         pid = dev.shell(f"pidof {a.pkg}").strip()
         rec["temps"].append(fp.temps(dev, "in_world"))
         step("已进世界")
@@ -257,35 +355,58 @@ def main():
                 rec["stopped_hot"] = {"clip": i, "battery": t["battery"]}
                 step(f"电池 {t['battery']}°C, 不再开新段")
                 break
-            if i and not walk(dev, a.serial, a.walk_s, rng, out, rec):
-                rec["stopped_revive"] = i
-                step("复苏页点不掉, 停止采集")
-                break
-            if not clear_revive(dev, a.serial, out, rec):
-                rec["stopped_revive"] = i
-                break
-            seg = f"{base}/{label}"
-            stop = threading.Event()
-            # 先动起来再开段, 段的第一帧就在运动里; static 也先点一下保持约 60 帧
-            thr = threading.Thread(target=act, args=(a.serial, motion, stop, rng), daemon=True)
-            thr.start()
-            time.sleep(0.5)
-            t0_ns, t0 = fp.now_ns(dev), time.time()
-            dev.shell(f"setprop debug.knobs.framedump_go {label}")
-            finished = False
-            for _ in range(int((a.frames / 10 + 60) / 0.5)):
-                names = dev.su(f"ls {seg} 2>/dev/null | grep -v raw")
-                if "summary.json" in names or "refused.json" in names:
-                    finished = "summary.json" in names
+            dead = False
+            for attempt in range(a.retries + 1):
+                try_label = label if not attempt else f"{label}_r{attempt}"
+                if (i or attempt) and not walk(a.serial, a.walk_s if not attempt else a.walk_s / 2, rng, out, rec):
+                    dead = True
                     break
-                time.sleep(0.5)
-            stop.set()
-            thr.join(timeout=30)
-            alive = dev.shell(f"pidof {a.pkg}").strip() == pid
-            clips.append({"label": label, "segment": i, "motion": motion, "finished": finished, "game_alive": alive, "wall_t0": t0, "t0_ns": t0_ns, "t_done": time.time()})
-            step(f"{label} 结束 {finished}, 游戏活着 {alive}")
-            if not finished or not alive:
+                if not settle(a.serial, out, rec)[0]:
+                    dead = True
+                    break
+                seg = f"{base}/{try_label}"
+                # 先动起来再开段, 段的第一帧就在运动里; static 也先点一下保持约 60 帧
+                stop, thr = threading.Event(), None
+                if motion == "run":
+                    held = start_run(a.serial, rng, out, rec)
+                    if held is None:
+                        rec.setdefault("rejected", []).append({"label": try_label, "reason": "跑不起来"})
+                        continue
+                else:
+                    thr = threading.Thread(target=act, args=(a.serial, motion, stop, rng), daemon=True)
+                    thr.start()
+                    time.sleep(0.5)
+                t0_ns, t0 = fp.now_ns(dev), time.time()
+                dev.shell(f"setprop debug.knobs.framedump_go {try_label}")
+                finished = False
+                for _ in range(int((a.frames / 10 + 60) / 0.5)):
+                    names = dev.su(f"ls {seg} 2>/dev/null | grep -v raw")
+                    if "summary.json" in names or "refused.json" in names:
+                        finished = "summary.json" in names
+                        break
+                    time.sleep(0.5)
+                stop.set()
+                if thr:
+                    thr.join(timeout=30)
+                if held:
+                    release_stick(a.serial, held)
+                    held = None
+                alive = dev.shell(f"pidof {a.pkg}").strip() == pid
+                passed, check = check_clip(dev, a.serial, seg, motion) if finished and alive else (False, None)
+                step(f"{try_label} 结束 {finished}, 游戏活着 {alive}, 核对 {check}")
+                if not finished or not alive:
+                    dead = True
+                    break
+                if passed:
+                    clips.append({"label": try_label, "segment": i, "motion": motion, "finished": True, "game_alive": alive, "motion_check": check, "wall_t0": t0, "t0_ns": t0_ns, "t_done": time.time()})
+                    break
+                rec.setdefault("rejected", []).append({"label": try_label, "reason": check})
+                dev.su(f"rm -rf {seg}")
+            else:
+                rec.setdefault("gave_up", []).append(label)
+            if dead:
                 rec["stopped_clip"] = i
+                step("采集停在这段")
                 break
         rec["temps"].append(fp.temps(dev, "after_capture"))
         rec["capture_wall_s"] = round(time.time() - t_start, 1)
@@ -302,6 +423,7 @@ def main():
             seg, dst = f"{base}/{c['label']}", os.path.join(out, "clips", c["label"])
             if kept_bytes >= LIMIT_BYTES:
                 c["dropped"] = "节点存储上限"
+                rec.setdefault("dropped", []).append(c["label"])
                 dev.su(f"rm -rf {seg}")
                 continue
             t = time.time()
@@ -361,6 +483,8 @@ def main():
         rec["error"] = f"{type(e).__name__}: {e}"
         print(rec["error"], file=sys.stderr, flush=True)
     finally:
+        if held:
+            release_stick(a.serial, held)
         if proc and proc.poll() is None:
             st = ab.session_action(PF, sdir, "stop")
         if proc:
