@@ -12,7 +12,7 @@
 --labels 是人看图写的场景标签, 写进清单 tags: 每行 <帧号或 a-b> <scene_type> <pose> <lighting> [inferred] (inferred: 光照没看到天空, 由时间线推断)。
 tags.motion 优先取采集 manifest 的 motion (来自输入记录), 没有这一列时有标签的帧是 static (停稳后截图)。HUD 排除框按 batch.json 的包名选, 没标过的游戏拒绝;
 --hr-size 必须等于批次记录的实际渲染尺寸 (记录为空时不查)。
-framedump 输入 (§3.5): 帧就是送显图, HR 直接用, 不再缩放; 帧可以是 .raw (按 session.json 的宽高和 vk_format 读, 丢掉 alpha) 或已转好的 PNG。每段是一个连续片段, 相邻帧不算独立样本:
+framedump 输入 (§3.5): 帧就是送显图, HR 直接用, 不再缩放, LR 仍由 HR 模拟, 所以还是模拟对 (hr_downsampled); 帧可以是 .raw (按 session.json 的宽高和 vk_format 读, 丢掉 alpha) 或已转好的 PNG。每段是一个连续片段, 相邻帧不算独立样本:
   只有关键帧 (clips.json 标了 key, 原始段按 --stride 取, 缺省每 0.5 秒一帧) 做 QA、切块、发布, 其余帧不要求在本机, 哈希和帧号留在发布目录的 clips.json 里。片段内不判冻结。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
   HR = 原生截图 (屏幕分辨率) LANCZOS 缩到游戏送显尺寸 --hr-size;
@@ -326,7 +326,6 @@ def main():
     if len(methods) != 1:
         sys.exit(f"一个版本只放一种采集方法, 现在是 {sorted(methods)}")
     capture_method = methods.pop()
-    source_kind = "hr_downsampled" if capture_method == "screencap" else "hr_native"
     derivation = {"hr": {"from": capture_method, "kernel": "PIL.LANCZOS" if capture_method == "screencap" else None, "size": [hw, hh]},
                   "lr": {"from": "hr", "kernel": "PIL.BOX", "size": [lw, lh]},
                   "scale": [hw / lw, hh / lh], "pixel_center": "PIL 像素中心 (x+0.5)/w 映射", "colorspace": "sRGB8"}
@@ -522,7 +521,7 @@ def main():
         shown.append((hp, f"seg{seg:03d} f{r['i']} {f['split']}"))
         f.pop("hr"), f.pop("lr")
         index.append({
-            "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind=source_kind,
+            "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind="hr_downsampled",
                            capture_method=capture_method, ts_ms=r["ts_ms"], step=r["step"], **({"clip": r["clip"]} if r.get("clip") else {})),
             "derivation": derivation,
             "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": r.get("pre_transform")},
@@ -537,7 +536,7 @@ def main():
                   open(os.path.join(root, "batches", batch_id, scene, "meta.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-manifest@1", "dataset": f"{a.name}-v{a.version}", "version": a.version,
                "batches": batches,
-               "source_kind": source_kind, "derivation": derivation, "frames": index, **({"clips": clip_info} if clip_info else {})},
+               "source_kind": "hr_downsampled", "derivation": derivation, "frames": index, **({"clips": clip_info} if clip_info else {})},
               open(os.path.join(root, "manifest.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-split@1", "dataset": f"{a.name}-v{a.version}", "fingerprint": fingerprint,
                "rule": {"test": test_rule, "guard": guard_rule, "val": f"segment % {VAL_MOD} == {VAL_REM}",

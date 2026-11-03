@@ -60,7 +60,7 @@ from cruise import CAM_X, CAM_Y, REVIVE_TAP, STICK, lock_fds, revive_dialog  # n
 ab = fp.ab
 MOTIONS = ("static", "turn_slow", "turn_fast", "run")
 W, H = 2688, 1216                # 屏幕横屏尺寸, 输入坐标用
-LIMIT_BYTES = 19.5e9             # 节点上这次最多留这么多 PNG (任务上限 20 GB)
+LIMIT_BYTES = 18e9               # 节点上这次最多留这么多 PNG (任务上限 20 GB, 含试采)
 RGB_ORDER = {37: (0, 1, 2), 44: (2, 1, 0)}   # vk_format → R, G, B 在每像素 4 字节里的位置
 DASH_ICON = (0.845, 0.815, 0.895, 0.905)     # 冲刺键, 爬墙时消失
 DROP_TAP = (0.80, 0.77)                      # 爬墙时是松手键, 平时是普攻, 点了无害
@@ -267,6 +267,16 @@ def pack_clip(dev, serial, seg, dst, pool):
     return session, rows, res, len(want)
 
 
+def onboard_failure(out, err):
+    """onboard 失败时 stderr 常是空的, 原因在 enter.json; 维护弹窗的时间也在那里。"""
+    try:
+        d = json.load(open(os.path.join(out, "onboard", "enter", "enter.json")))
+    except (OSError, ValueError):
+        return err
+    notice = next((" ".join(s["ocr"]) for s in d.get("steps", []) if "维护" in " ".join(s.get("ocr") or [])), None)
+    return f"{d.get('reason')}; {notice or err}"
+
+
 def meta(dev, pkg):
     m = lambda text, pat: (re.search(pat, text) or [None, None])[1]
     pkgs = dev.shell(f"dumpsys package {pkg}")
@@ -343,7 +353,7 @@ def main():
             raise RuntimeError(f"session not ready (phase={phase}, exit={proc.poll()})")
         code, err = ab.onboard(SimpleNamespace(phonefarm=PF, pkg=a.pkg, serial=a.serial), out, "enter", False)
         if code != 0:
-            raise RuntimeError(f"onboard --no-cold: {err}")
+            raise RuntimeError(f"onboard --no-cold: {onboard_failure(out, err)}")
         time.sleep(20)   # 等加载动画和公告淡出
         global W, H
         W, H = look(a.serial, out)[1].size
