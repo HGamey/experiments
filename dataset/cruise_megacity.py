@@ -81,7 +81,11 @@ def main():
     counts = dict.fromkeys(MOTIONS, 0)
     prev_sha, stop = None, "max_steps"
     throttle, tilt, escapes, lost = THROTTLE_ZERO, 0.0, 0, False
-    w, h, prev_luma = 0, 0, None
+    size = png_size(adb(a.serial, "exec-out", "screencap -p", binary=True, timeout=60))
+    if not size:
+        print(json.dumps({"ok": False, "capturer": "cruise", "script": "cruise_megacity.py", "error": "first screencap failed"}))
+        return 2
+    w, h, prev_luma = max(size), min(size), None   # 先知道横屏尺寸, 第一段的油门和段首移动才生效
 
     def set_throttle(want):
         nonlocal throttle
@@ -96,39 +100,38 @@ def main():
         steps += 1
         motion = MOTIONS[(kept // SEGMENT_FRAMES + a.seed) % len(MOTIONS)]
         hold = None
-        if w:
-            first = kept % SEGMENT_FRAMES == 0
-            side = rng.choice((-1, 1))
-            if lost:   # 掉头
-                swipe(a.serial, w, h, *AIM, side * 0.14, 0, 800)
-                escapes += 1
-            if first or lost:   # 换个地方再开始
-                swipe(a.serial, w, h, *AIM, side * rng.uniform(0.06, 0.12), -tilt, 500)
-                tilt = 0.0
-                set_throttle(THROTTLE_FULL)
-                time.sleep(RELOCATE_S)
-                set_throttle(THROTTLE_FLY if motion == "flight" else THROTTLE_ZERO)
-                if motion != "flight":
-                    time.sleep(COAST_S)
-            lost = False
-            dy = 0.0
-            if motion in ("static", "flight"):
-                if tilt:
-                    dy, tilt = -tilt, 0.0   # 还原上一帧的俯仰
-                else:
-                    dy = tilt = rng.choice((-1, 1)) * rng.uniform(0.01, 0.03)
-            if motion == "turn_slow":
-                hold = swipe(a.serial, w, h, *AIM, side * 0.03, 0, 1800, wait=False)
-                time.sleep(0.7)
-            elif motion == "turn_fast":
-                hold = swipe(a.serial, w, h, *AIM, side * 0.14, 0, 1200, wait=False)
-                time.sleep(0.5)
-            elif motion == "flight":
-                swipe(a.serial, w, h, *AIM, side * rng.uniform(0.02, 0.08), dy, 400)
-                time.sleep(1.5)
+        first = kept % SEGMENT_FRAMES == 0
+        side = rng.choice((-1, 1))
+        if lost:   # 掉头
+            swipe(a.serial, w, h, *AIM, side * 0.14, 0, 800)
+            escapes += 1
+        if first or lost:   # 换个地方再开始
+            swipe(a.serial, w, h, *AIM, side * rng.uniform(0.06, 0.12), -tilt, 500)
+            tilt = 0.0
+            set_throttle(THROTTLE_FULL)
+            time.sleep(RELOCATE_S)
+            set_throttle(THROTTLE_FLY if motion == "flight" else THROTTLE_ZERO)
+            if motion != "flight":
+                time.sleep(COAST_S)
+        lost = False
+        dy = 0.0
+        if motion in ("static", "flight"):
+            if tilt:
+                dy, tilt = -tilt, 0.0   # 还原上一帧的俯仰
             else:
-                swipe(a.serial, w, h, *AIM, side * rng.uniform(0.01, 0.04), dy, 400)
-                time.sleep(a.settle_ms / 1000)
+                dy = tilt = rng.choice((-1, 1)) * rng.uniform(0.01, 0.03)
+        if motion == "turn_slow":
+            hold = swipe(a.serial, w, h, *AIM, side * 0.03, 0, 1800, wait=False)
+            time.sleep(0.7)
+        elif motion == "turn_fast":
+            hold = swipe(a.serial, w, h, *AIM, side * 0.14, 0, 1200, wait=False)
+            time.sleep(0.5)
+        elif motion == "flight":
+            swipe(a.serial, w, h, *AIM, side * rng.uniform(0.02, 0.08), dy, 400)
+            time.sleep(1.5)
+        else:
+            swipe(a.serial, w, h, *AIM, side * rng.uniform(0.01, 0.04), dy, 400)
+            time.sleep(a.settle_ms / 1000)
         png = adb(a.serial, "exec-out", "screencap -p", binary=True, timeout=60)
         if hold:
             hold.wait(timeout=30)
