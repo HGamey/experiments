@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """make_pairs.py — 方法 C 模拟对 (DATASET-COLLECTION §3.3/§3.8–§3.10): capture 输出目录 → 数据集版本目录 (本机跑, 不占设备)。
 
-    python3 -I dataset/make_pairs.py <capture 输出目录> --out <数据集根> [--name gi-sim] [--version 0] [--batch gi-YYYYMMDD-01]
-        [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr]
-        [--exclude 排除清单] [--no-preview]
+    python3 -I dataset/make_pairs.py <capture 输出目录> [<capture 输出目录> ...] --out <数据集根> [--name gi-sim] [--version 0]
+        [--batch gi-YYYYMMDD-01 ...] [--exclude 排除清单 ...] [--labels 场景标签 ...] [--test-seg <batch>:<段号> ...]
+        [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr] [--no-preview]
 
-输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json)。
+输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json)。多批按命令行顺序拼接;
+--batch、--exclude、--labels 重复时与输入一一对应。每批帧号和段号各自从 0 起, 内部把段号加上偏移 (保持 % 5 不变) 变成
+全数据集唯一, 清单里仍记原批帧号和 batch_segment; 新批首帧不与上一批比冻结。
+--labels 是人看图写的场景标签, 写进清单 tags: 每行 <帧号或 a-b> <scene_type> <pose> <lighting> [inferred] (inferred: 光照没看到天空, 由时间线推断)。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
   HR = 原生截图 (屏幕分辨率) LANCZOS 缩到游戏送显尺寸 --hr-size;
   LR = HR 经 BOX 缩到 --lr-size (Game Mode 0.56 时游戏实际渲染尺寸); source.kind=hr_downsampled。
@@ -18,7 +21,8 @@ QA (§3.8, 规则沿用 SPEC_SR_LOOP §4.1, 倍率换成约 1.42):
   4 切块: HR 上 --tile 网格, 与 HUD 排除区相交的块记为 hud (单独标注, 不进训练块);
   5 场景块逐块 bicubic 重建 PSNR (RGB 联合 MSE) > --psnr-min 才保留;
   6 熔断: (PSNR 丢弃块 + 对齐丢弃帧的场景块) / 可用场景块 > --breaker → 不发布 (只写 qa_report.json), 退出码 3。
-划分 (§3.9, 按 segment, 同段不跨集): 路线末尾连续 --test-segments 段为 test, 其前 1 段为 guard (丢弃, 隔开相邻帧),
+划分 (§3.9, 按 segment, 同段不跨集): 路线末尾连续 --test-segments 段为 test, 其前 1 段为 guard (丢弃, 隔开相邻帧);
+  给了 --test-seg 就改用人选的段 (每种场景类型至少一个), 它们同批的前后相邻段为 guard;
   其余 segment % 5 == 4 为 val, 剩下 train。基线锁定: val/test 场景块上双线性、bicubic 的 PSNR / SSIM 均值。
 输出 (§3.10): <out>/<name>-v<version>/{manifest.json, split.json, qa_report.json,
   batches/<batch>/seg<NNN>/{hr/f<10 位帧号>.png, lr/..., meta.json}, preview/ (展示用接触表与裁剪对比)}。
@@ -181,11 +185,11 @@ def find_capture(src):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("src")
+    ap.add_argument("src", nargs="+")
     ap.add_argument("--out", required=True)
     ap.add_argument("--name", default="gi-sim")
     ap.add_argument("--version", default="0")
-    ap.add_argument("--batch", default=None, help="batch-id, 缺省 gi-<首帧日期>-01")
+    ap.add_argument("--batch", action="append", default=[], help="batch-id, 缺省 gi-<首帧日期>-01; 多批时逐批给")
     ap.add_argument("--hr-size", type=size_arg, default=(2141, 969))
     ap.add_argument("--lr-size", type=size_arg, default=(1505, 681))
     ap.add_argument("--tile", type=int, default=256)
@@ -193,24 +197,46 @@ def main():
     ap.add_argument("--breaker", type=float, default=0.05)
     ap.add_argument("--test-segments", type=int, default=None, help="路线末尾留作 test 的段数, 缺省 max(1, 段数的 10%%)")
     ap.add_argument("--write-lr", action="store_true", help="模拟 LR 也落盘 (缺省只存配方)")
-    ap.add_argument("--exclude", default=None,
-                    help="人工看图排除的帧: 每行 <帧号或 a-b> <原因>, # 开头为注释 (菜单/对话/加载页等, §3.8 有效画面)")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="人工看图排除的帧: 每行 <帧号或 a-b> <原因>, # 开头为注释 (菜单/对话/加载页等, §3.8 有效画面); 多批时逐批给")
+    ap.add_argument("--labels", action="append", default=[], help="人看图写的场景标签, 格式见文件头; 多批时逐批给")
+    ap.add_argument("--test-seg", action="append", default=[], metavar="BATCH:SEG", help="人选的 test 段 (批内段号), 可重复")
     ap.add_argument("--no-preview", action="store_true", help="不出 preview/ (接触表与 HR/LR/bicubic 裁剪对比)")
     a = ap.parse_args()
-    frames_dir, rows, batch = find_capture(a.src)
-    excluded = {}
-    for line in open(a.exclude, encoding="utf-8") if a.exclude else []:
-        line = line.split("#", 1)[0].strip()
-        if line:
-            rng, _, why = line.partition(" ")
-            lo, _, hi = rng.partition("-")
-            for i in range(int(lo), int(hi or lo) + 1):
-                excluded[i] = why.strip() or "manual"
-    if not rows:
-        sys.exit("manifest 为空")
+    for name, given in (("--batch", a.batch), ("--exclude", a.exclude), ("--labels", a.labels)):
+        if given and len(given) != len(a.src):
+            sys.exit(f"{name} 给了 {len(given)} 个, 输入有 {len(a.src)} 批")
+
+    def ranged(path):
+        for line in open(path, encoding="utf-8") if path else []:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                rng, _, rest = line.partition(" ")
+                lo, _, hi = rng.partition("-")
+                for i in range(int(lo), int(hi or lo) + 1):
+                    yield i, rest.strip()
+    rows, batches, seg_base, excluded, labels = [], [], 0, {}, {}
+    for k, src in enumerate(a.src):
+        frames_dir, batch_rows, batch = find_capture(src)
+        if not batch_rows:
+            sys.exit(f"{src} 的 manifest 为空")
+        day = datetime.datetime.fromtimestamp(batch_rows[0]["ts_ms"] / 1000, datetime.timezone.utc).strftime("%Y%m%d")
+        batch_id = a.batch[k] if a.batch else f"gi-{day}-01"
+        for i, why in ranged(a.exclude[k] if a.exclude else None):
+            excluded[batch_id, i] = why or "manual"
+        for i, words in ranged(a.labels[k] if a.labels else None):
+            scene_type, pose, lighting, *basis = words.split()
+            labels[batch_id, i] = {"scene_type": scene_type, "motion": "static", "pose": pose, "lighting": lighting,
+                                   "lighting_basis": basis[0] if basis else "seen"}
+        for r in batch_rows:   # 段号全数据集唯一, 偏移取 VAL_MOD 的倍数使 val 规则不变
+            r.update(batch_id=batch_id, frames_dir=frames_dir, batch_segment=r["segment"], segment=seg_base + r["segment"])
+        rows += batch_rows
+        batches.append({"id": batch_id, "capture": batch.get("capture"), "meta": {k2: batch.get(k2) for k2 in (
+            "node_id", "job_id", "experiment_commit", "research", "package", "version_name", "version_code", "fingerprint",
+            "android", "platform", "gles", "screen", "render_size", "graphics_prefs")}})
+        seg_base += (max(r["batch_segment"] for r in batch_rows) // VAL_MOD + 1) * VAL_MOD
+    meta_of = {b["id"]: b["meta"] for b in batches}
     (hw, hh), (lw, lh), t = a.hr_size, a.lr_size, a.tile
-    day = datetime.datetime.fromtimestamp(rows[0]["ts_ms"] / 1000, datetime.timezone.utc).strftime("%Y%m%d")
-    batch_id = a.batch or f"gi-{day}-01"
     root = os.path.join(a.out, f"{a.name}-v{a.version}")
     if os.path.exists(os.path.join(root, "qa_report.json")):
         sys.exit(f"{root} 已存在; 版本发布后不改, 换 --version")
@@ -221,7 +247,7 @@ def main():
     # 1 完整性: 任一帧不符 → 整段作废
     bad_seg, integrity = set(), []
     for r in rows:
-        p = os.path.join(frames_dir, r["file"])
+        p = os.path.join(r["frames_dir"], r["file"])
         err = None
         if not os.path.isfile(p):
             err = "missing"
@@ -238,13 +264,27 @@ def main():
                 err = "decode"
         if err:
             bad_seg.add(r["segment"])
-            integrity.append({"file": r["file"], "segment": r["segment"], "error": err})
+            integrity.append({"batch": r["batch_id"], "file": r["file"], "segment": r["segment"], "error": err})
 
     # 划分 (按 segment)
     segs = sorted({r["segment"] for r in rows if r["segment"] not in bad_seg})
-    n_test = a.test_segments if a.test_segments is not None else max(1, round(len(segs) * 0.1))
-    test_segs = segs[-n_test:] if n_test else []
-    guard_segs = segs[-n_test - 1:-n_test] if n_test and len(segs) > n_test else []
+    if a.test_seg:
+        where = {(r["batch_id"], r["batch_segment"]): r["segment"] for r in rows}
+        try:
+            test_segs = sorted({where[spec.rpartition(":")[0], int(spec.rpartition(":")[2])] for spec in a.test_seg})
+        except KeyError as e:
+            sys.exit(f"--test-seg 没有这一段: {e}")
+        batch_of = {r["segment"]: r["batch_id"] for r in rows}
+        guard_segs = sorted({n for s in test_segs for n in (s - 1, s + 1)
+                             if n in batch_of and batch_of[n] == batch_of[s] and n not in test_segs})
+        test_rule = f"人选 {len(test_segs)} 段 (每种场景类型至少一个)"
+        guard_rule = "test 同批前后相邻段, 丢弃"
+    else:
+        n_test = a.test_segments if a.test_segments is not None else max(1, round(len(segs) * 0.1))
+        test_segs = segs[-n_test:] if n_test else []
+        guard_segs = segs[-n_test - 1:-n_test] if n_test and len(segs) > n_test else []
+        test_rule = f"路线末尾连续 {n_test} 段"
+        guard_rule = "test 前 1 段, 丢弃"
     split_of = {}
     for s in segs:
         split_of[s] = ("test" if s in test_segs else "guard" if s in guard_segs
@@ -257,12 +297,14 @@ def main():
               "scene_tiles_kept": 0, "hud_tiles": 0}
     frames, base = [], {s: {"bilinear": {"psnr": [], "ssim": []}, "bicubic": {"psnr": [], "ssim": []}} for s in ("val", "test")}
     tile_psnrs = []
-    prev_thumb = None
+    prev_thumb, prev_batch = None, None
     for r in rows:
+        if r["batch_id"] != prev_batch:
+            prev_thumb, prev_batch = None, r["batch_id"]
         if r["segment"] in bad_seg:
             drops["integrity_segment"] += 1
             continue
-        if r["i"] in excluded:
+        if (r["batch_id"], r["i"]) in excluded:
             drops["excluded"] += 1
             continue
         if r.get("ready_only"):
@@ -277,7 +319,7 @@ def main():
         if r.get("diff_prev") is not None and r["diff_prev"] < DUP_THRESH:
             drops["frozen"] += 1
             continue
-        src = Image.open(os.path.join(frames_dir, r["file"])).convert("RGB")
+        src = Image.open(os.path.join(r["frames_dir"], r["file"])).convert("RGB")
         if r.get("diff_prev") is None:   # 采集端没算 (cruise): 离线按同一定义算, 与上一保留帧比
             th = np.asarray(src.convert("L").resize((64, 36), Image.BILINEAR), dtype=np.float64)
             if prev_thumb is not None and np.abs(th - prev_thumb).mean() < DUP_THRESH:
@@ -336,9 +378,11 @@ def main():
     def mean(v):
         return round(float(np.mean(v)), 4) if v else None
     baseline = {s: {m: {k: mean(v) for k, v in d.items()} for m, d in base[s].items()} for s in base}
-    qa = {"schema": "hgamey/dataset-qa@1", "dataset": f"{a.name}-v{a.version}", "batch": batch_id, "published": published,
+    batch_ids = [b["id"] for b in batches]
+    qa = {"schema": "hgamey/dataset-qa@1", "dataset": f"{a.name}-v{a.version}", "batch": batch_ids[0] if len(batch_ids) == 1 else batch_ids, "published": published,
           "rows": len(rows), "frames_kept": len(frames), "frame_drops": drops,
-          "excluded": [{"frame": i, "reason": w} for i, w in sorted(excluded.items()) if any(r["i"] == i for r in rows)], "integrity_failures": integrity,
+          "excluded": [{"batch": b, "frame": i, "reason": w} for (b, i), w in sorted(excluded.items())
+                       if any(r["batch_id"] == b and r["i"] == i for r in rows)], "integrity_failures": integrity,
           "tiles": counts, "drop_ratio": round(drop_ratio, 5), "breaker": a.breaker, "psnr_min": a.psnr_min,
           "align_max_px": ALIGN_MAX_PX, "tile": a.tile, "tiles_per_frame": {"scene": len(scene_tiles), "hud": len(tile_grid) - len(scene_tiles)},
           "tile_psnr_bicubic": {"min": round(min(tile_psnrs), 3) if tile_psnrs else None, "mean": mean(tile_psnrs),
@@ -351,14 +395,12 @@ def main():
         print(f"熔断: 丢弃块占比 {drop_ratio:.2%} > {a.breaker:.0%}, 不发布 (见 qa_report.json)", file=sys.stderr)
         return 3
 
-    src_meta = {k: batch.get(k) for k in ("node_id", "job_id", "experiment_commit", "research", "package", "version_name",
-                                          "version_code", "fingerprint", "android", "platform", "gles", "screen", "render_size",
-                                          "graphics_prefs")}
     index, shown = [], []
     frames = [f for f in frames if f["split"] != "guard"]   # guard 段只隔开 test, 不落盘
     for f in frames:
         r, seg = f["r"], f["r"]["segment"]
-        f["hr"], f["lr"] = derive(Image.open(os.path.join(frames_dir, r["file"])).convert("RGB"), a)
+        batch_id = r["batch_id"]
+        f["hr"], f["lr"] = derive(Image.open(os.path.join(r["frames_dir"], r["file"])).convert("RGB"), a)
         scene = f"seg{seg:03d}"
         d = os.path.join(root, "batches", batch_id, scene)
         os.makedirs(os.path.join(d, "hr"), exist_ok=True)
@@ -377,29 +419,30 @@ def main():
         shown.append((hp, f"seg{seg:03d} f{r['i']} {f['split']}"))
         f.pop("hr"), f.pop("lr")
         index.append({
-            "source": dict(src_meta, batch=batch_id, scene=scene, frame=r["i"], kind="hr_downsampled",
+            "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind="hr_downsampled",
                            capture_method="screencap", ts_ms=r["ts_ms"], step=r["step"]),
             "derivation": derivation,
             "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": None},
-            "tags": {"scene_type": None, "motion": None, "lighting": None, "hud": "standard", "time_weather": None,
-                     "auto_luma_mean": f["luma_mean"]},
+            "tags": {"scene_type": None, "motion": None, "lighting": None, **labels.get((batch_id, r["i"]), {}), "hud": "standard",
+                     "time_weather": None, "auto_luma_mean": f["luma_mean"]},
             "checks": {"files": files, "align_dx_dy": f["align"], "psnr_full_bicubic": f["psnr_full_bicubic"],
                        "tiles_kept": len(f["tiles"]), "tiles_dropped": len(f["tiles_dropped"]), "mask_coverage": None},
             "split": f["split"], "path": os.path.join("batches", batch_id, scene, files["hr"]["file"])})
-    for scene in sorted({e["source"]["scene"] for e in index}):
-        json.dump([e for e in index if e["source"]["scene"] == scene],
+    for batch_id, scene in sorted({(e["source"]["batch"], e["source"]["scene"]) for e in index}):
+        json.dump([e for e in index if e["source"]["batch"] == batch_id and e["source"]["scene"] == scene],
                   open(os.path.join(root, "batches", batch_id, scene, "meta.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-manifest@1", "dataset": f"{a.name}-v{a.version}", "version": a.version,
-               "batches": [{"id": batch_id, "capture": batch.get("capture"), "meta": src_meta}],
+               "batches": batches,
                "source_kind": "hr_downsampled", "derivation": derivation, "frames": index},
               open(os.path.join(root, "manifest.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-split@1", "dataset": f"{a.name}-v{a.version}", "fingerprint": fingerprint,
-               "rule": {"test": f"路线末尾连续 {n_test} 段", "guard": "test 前 1 段, 丢弃", "val": f"segment % {VAL_MOD} == {VAL_REM}",
+               "rule": {"test": test_rule, "guard": guard_rule, "val": f"segment % {VAL_MOD} == {VAL_REM}",
                         "train": "其余"},
                "thresholds": {"psnr_min": a.psnr_min, "align_max_px": ALIGN_MAX_PX, "breaker": a.breaker, "dup_thresh": DUP_THRESH,
                               "flat_std": FLAT_STD},
                "tile": {"size": a.tile, "space": "hr", "lr_box": "x*lw/hw, y*lh/hh (非整数, 训练端按比例取)", "hud_boxes": HUD_BOXES},
                "baseline_locked": baseline, "segments": {str(s): split_of[s] for s in segs},
+               "segment_source": {str(s): sorted({(r["batch_id"], r["batch_segment"]) for r in rows if r["segment"] == s}) for s in segs},
                "frames": [{"path": e["path"], "split": e["split"], "segment": f["r"]["segment"],
                            "tiles": [[tt["x"], tt["y"]] for tt in f["tiles"]]} for e, f in zip(index, frames)]},
               open(os.path.join(root, "split.json"), "w"), ensure_ascii=False, indent=1)
