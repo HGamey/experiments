@@ -6,7 +6,7 @@
           experiment dataset/framedump_probe.py <serial> --frames 60
 
 --arm native 只开 framedump; gamemode 加 Game Mode 降到 --scale; selfsr 再加 debug.knobs.selfsr=--sr。
-开段后先不动截 2 张图 (带 CLOCK_MONOTONIC 前后时刻, 用来和同时刻的帧比), 再转视角加走动到段结束, 让帧里有运动。
+开段前量两种基线帧率 (不动、走动); 开段后先不动截 2 张图 (带 CLOCK_MONOTONIC 前后时刻, 用来和同时刻的帧比), 再转视角加走动到段结束。
 产物 ($PF_JOB_OUT/fd_<arm>_<时间>/): report.json, session.json, index.csv, summary.json, raw.sha256, logcat.txt,
   shot_*.png, sample/f*.raw (抽帧), segment.tar (--keep-all 才有, 整段原始帧)。手机上的输出目录读回后删除。
 收尾 (含出错): 停会话摘层、清 debug.knobs.*、还原 Game Mode 和音量、强停游戏、删输出目录, 逐项回读写进 report.json 的 restore。
@@ -47,9 +47,16 @@ def now_ns(dev):
     return int(m.group(1)) if m else None
 
 
+THERMAL_TYPES = {"0": "cpu", "1": "gpu", "2": "battery", "3": "skin"}
+
+
 def temps(dev, tag):
-    skin = re.search(r"mValue=([0-9.]+), mType=3, mName=skin", dev.shell("dumpsys thermalservice").split("from HAL")[-1])   # 前面是缓存值, 不更新
-    return {"at": tag, "t": round(time.time(), 1), "battery_c": ab.batt_temp_c(dev), "skin_c": float(skin.group(1)) if skin else None}
+    """thermalservice 前面的是缓存值, 不更新; 取 HAL 那一节, 每类取最高。"""
+    by = {}
+    for v, ty in re.findall(r"mValue=([0-9.]+), mType=(\d+), mName=", dev.shell("dumpsys thermalservice").split("from HAL")[-1]):
+        if ty in THERMAL_TYPES:
+            by[THERMAL_TYPES[ty]] = max(by.get(THERMAL_TYPES[ty], 0), round(float(v), 1))
+    return {"at": tag, "t": round(time.time(), 1), "battery_dumpsys_c": ab.batt_temp_c(dev), **by}
 
 
 def game_layer(dev, pkg):
@@ -71,6 +78,16 @@ def layer_fps(dev, name, windows=6):
     return {"windows": fps, "mean": round(sum(fps) / len(fps), 2) if fps else None}
 
 
+def move(dev, serial, side):
+    """走 1.8 s, 同时转一下视角。"""
+    w, h = 2688, 1216
+    sx, sy = int(STICK[0] * w), int(STICK[1] * h)
+    walk = subprocess.Popen(["adb", "-s", serial, "shell", f"input swipe {sx} {sy} {sx} {sy - int(0.13 * h)} 1800"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
+    cy, cx = int(sum(CAM_Y) / 2 * h), int(sum(CAM_X) / 2 * w)
+    dev.shell(f"input swipe {cx} {cy} {cx + side * int(0.12 * w)} {cy} 700")
+    walk.wait(timeout=30)
+
+
 def pull_bytes(serial, path, timeout=120):
     r = subprocess.run(["adb", "-s", serial, "exec-out", f"su -c {shlex.quote('cat ' + shlex.quote(path))}"], capture_output=True, timeout=timeout, pass_fds=lock_fds())
     return r.stdout
@@ -88,6 +105,7 @@ def main():
     ap.add_argument("--samples", type=int, default=12)
     ap.add_argument("--keep-all", action="store_true")
     ap.add_argument("--session-seconds", type=int, default=900)
+    ap.add_argument("--cool-max", type=float, default=42.0, help="开跑前等电池降到这个温度, 最多等 10 分钟")
     a = ap.parse_args()
     out = os.path.join(os.environ.get("PF_JOB_OUT") or os.path.join(ROOT, "_runs"), f"fd_{a.arm}_{time.strftime('%Y%m%d-%H%M%S')}")
     os.makedirs(os.path.join(out, "sample"))
@@ -112,6 +130,8 @@ def main():
                      "wakefulness": (re.search(r"mWakefulness=(\w+)", dev.shell("dumpsys power")) or [None, None])[1]}
     orig_mode = rec["before"]["game_mode"]
     rec["temps"].append(temps(dev, "before"))
+    rec["cool_wait_c"] = ab.wait_batt_temp(dev, a.cool_max, rising=False, max_s=600)
+    rec["temps"].append(temps(dev, "after_cool_wait"))
     proc, sdir, st = None, os.path.join(out, "session"), None
     try:
         dev.shell("input keyevent KEYCODE_WAKEUP; am kill-all")
@@ -150,6 +170,13 @@ def main():
         rec["temps"].append(temps(dev, "in_world"))
         step(f"已进世界, 图层 {layer}, 量基线帧率")
         rec["fps_no_capture"] = layer_fps(dev, layer)
+        got = {}   # 不动时游戏只有约 30 帧, 走动时才到 60, 所以两种状态都量, 和抓帧时同样的走动比
+        thr = threading.Thread(target=lambda: got.update(layer_fps(ab.Dev(a.serial), layer, 8) or {}), daemon=True)
+        thr.start()
+        for i in range(5):
+            move(dev, a.serial, 1 if i % 2 else -1)
+        thr.join(timeout=30)
+        rec["fps_no_capture_moving"] = got
         rec["temps"].append(temps(dev, "before_go"))
         dev.shell(f"logcat -c; setprop debug.knobs.framedump_go {label}")
         rec["t_go"] = time.time()
@@ -165,7 +192,6 @@ def main():
         fps_during = {}
         thr = threading.Thread(target=lambda: fps_during.update(layer_fps(ab.Dev(a.serial), layer, 6) or {}), daemon=True)
         thr.start()
-        w, h = 2688, 1216
         for i in range(2):   # 不动时截图, 带前后时刻, 离线和同时刻的帧比
             t0 = now_ns(dev)
             png = subprocess.run(["adb", "-s", a.serial, "exec-out", "screencap -p"], capture_output=True, timeout=60, pass_fds=lock_fds()).stdout
@@ -180,11 +206,7 @@ def main():
             if "summary.json" in dev.su(f"ls {seg} 2>/dev/null | grep -v raw"):
                 done = True
                 break
-            sx, sy = int(STICK[0] * w), int(STICK[1] * h)
-            walk = subprocess.Popen(["adb", "-s", a.serial, "shell", f"input swipe {sx} {sy} {sx} {sy - int(0.13 * h)} 1800"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=lock_fds())
-            cy, cx = int(sum(CAM_Y) / 2 * h), int(sum(CAM_X) / 2 * w)
-            dev.shell(f"input swipe {cx} {cy} {cx + side * int(0.12 * w)} {cy} 700")
-            walk.wait(timeout=30)
+            move(dev, a.serial, side)
             side = -side
         rec["t_end"] = time.time()
         thr.join(timeout=30)
@@ -192,7 +214,7 @@ def main():
         rec["temps"].append(temps(dev, "after_capture"))
         rec["game_alive_after"] = dev.shell(f"pidof {a.pkg}").strip() == pid
         rec["segment_finished"] = done
-        open(os.path.join(out, "logcat.txt"), "w").write(dev.shell("logcat -d -s refknobs | grep -i -E 'framedump|selfsr' | tail -200"))
+        open(os.path.join(out, "logcat.txt"), "w").write(dev.shell("logcat -d | grep -E 'refknobs|framedump' | tail -200"))
         step(f"段结束 {done}, 游戏活着 {rec['game_alive_after']}")
         rec["layer_marker"] = ab.session_action(PF, sdir, "marker")
         st = ab.session_action(PF, sdir, "stop")   # 读回时游戏不用开着, 手机少发热
@@ -210,10 +232,12 @@ def main():
         rows = list(csv.DictReader(io.StringIO(open(os.path.join(out, "index.csv")).read())))
         files = [r["file"] for r in rows if r["file"].endswith(".raw")]
         pick = {files[round(i * (len(files) - 1) / max(1, a.samples - 1))] for i in range(a.samples)} if files else set()
-        for sh in rec["shots"]:   # 截图前后时刻之内的帧, 最多取 8 张, 离线挑最像的比
+        for sh in rec["shots"]:   # 截图前后时刻之内的帧: 取最前面的 12 张 (实测截图发生在前 100 ms 左右), 离线挑最像的比
             inside = [r["file"] for r in rows if r["file"].endswith(".raw") and sh["t0_ns"] and sh["t0_ns"] <= int(r["t_ns"]) <= sh["t1_ns"]]
             sh["frames_in_window"] = len(inside)
-            pick |= {inside[round(i * (len(inside) - 1) / 7)] for i in range(8)} if len(inside) >= 8 else set(inside)
+            pick |= set(inside[:12])
+        rec["consecutive"] = files[round(len(files) * 0.75):][:6]   # 走动时的连续几帧
+        pick |= set(rec["consecutive"])
         t, bad = time.time(), []
         for n in sorted(pick):
             b = pull_bytes(a.serial, f"{seg}/{n}")
