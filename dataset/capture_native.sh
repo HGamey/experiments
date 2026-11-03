@@ -14,7 +14,6 @@
 #   frames/{frame_*.png, manifest.jsonl} (cruise) 或 capture-<token>/frames/ (phonefarm)  截图字节不重编码
 #   capture.json capture.log onboard/   巡航报告与进度, 进门记录
 #   meta_before.txt meta_after.txt  包版本/屏幕/系统/GPU/root/Game Mode/画质档位 的前后快照
-#   playerprefs_before.xml playerprefs_after.xml  原神以外的游戏: 设置原文 (graphics_prefs 只解析原神的格式)
 #   sf_<秒>.txt                     采集中途的 SurfaceFlinger 快照, 取游戏图层 Source Crop 当实际渲染尺寸
 #   batch.json                      §3.2/§3.10 整批元数据; restore.json 收尾核对 (ok=true 才可释放手机)
 # 不改游戏设置与 Game Mode。cruise: onboard 会把媒体音量置 0, 收尾按开跑前原值写回; 结束强停游戏, 开跑前熄屏则熄屏。
@@ -44,13 +43,16 @@ PREFS=/data/data/$PKG/shared_prefs/$PKG.v2.playerprefs.xml
 OUT="${PF_JOB_OUT:-$ROOT/_runs}/dataset_capture_$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 a() { adb -s "$SERIAL" shell "$@" 2>&1 | tr -d '\r'; }
-# 画质档位: playerprefs 里 GENERAL_DATA 的 (entryType, index) 列表, 只读, 不落原文件
+# 画质档位: playerprefs 里 GENERAL_DATA 的 (entryType, index) 列表 (原神) 或 Unity 画质档和分辨率, 只读, 不落原文件
 prefs() {
   a "su -c 'cat $PREFS'" | python3 -I -c '
 import re, sys, urllib.parse
-m = re.search(r"name=\"GENERAL_DATA\">([^<]*)<", sys.stdin.read())
+x = sys.stdin.read()
+m = re.search(r"name=\"GENERAL_DATA\">([^<]*)<", x)
 t = urllib.parse.unquote(m.group(1)) if m else ""
-print(",".join(a + "=" + b for a, b in re.findall(r"entryType\\\":(\d+),\\\"index\\\":(\d+)", t)) or "null")'
+u = re.findall(r"name=\"(UnityGraphicsQuality|Screenmanager%20Resolution%20\w+)\" value=\"(\d+)\"", x)
+print(",".join(a + "=" + b for a, b in re.findall(r"entryType\\\":(\d+),\\\"index\\\":(\d+)", t)) or
+      ",".join(urllib.parse.unquote(a) + "=" + b for a, b in sorted(u)) or "null")'
 }
 meta() {  # meta <文件>
   {
@@ -73,7 +75,6 @@ meta() {  # meta <文件>
   } > "$1"
 }
 meta "$OUT/meta_before.txt"
-[ "$PKG" = com.miHoYo.Yuanshen ] || a "su -c 'cat $PREFS'" > "$OUT/playerprefs_before.xml"
 # 开跑前清后台 App: am kill-all 只杀后台进程, 不动前台/系统 (2026-11-03 红魔 91253241019A 实测 exit 0、前台焦点不变)。
 # 防上一轮遗留 App 抢资源, 干扰采集期间的帧率/温度/功耗。
 a am kill-all >/dev/null
@@ -127,7 +128,6 @@ touch "$OUT/.probe_stop"
 wait "$PROBE" 2>/dev/null
 rm -f "$OUT/.probe_stop"
 meta "$OUT/meta_after.txt"
-[ "$PKG" = com.miHoYo.Yuanshen ] || a "su -c 'cat $PREFS'" > "$OUT/playerprefs_after.xml"
 python3 -I - "$OUT" "$CODE" "$PKG" <<'PY'
 import glob, json, os, re, sys
 out, code, pkg = sys.argv[1], int(sys.argv[2]), sys.argv[3]
