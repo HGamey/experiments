@@ -65,8 +65,8 @@ RGB_ORDER = {37: (0, 1, 2), 44: (2, 1, 0)}   # vk_format → R, G, B 在每像�
 DASH_ICON = (0.845, 0.815, 0.895, 0.905)     # 冲刺键, 爬墙时消失
 DROP_TAP = (0.80, 0.77)                      # 爬墙时是松手键, 平时是普攻, 点了无害
 SCENE = (0.25, 0.15, 0.75, 0.80)             # 比运动只看这块, 避开 HUD
-RUN_MIN_DIFF = 2.0                           # 跑着时相隔 0.3 秒以上的两帧, 中央区灰度平均差不小于这个; 试采卡住时是 0.56
-STATIC_MAX_DIFF = 5.0                        # 静止段任意两帧的差不大于这个; 试采是 0.9
+RUN_MIN_DIFF = 1.5                           # 跑着时相隔 1 秒以上的两帧, 中央区灰度差的中位数不小于这个; 试采卡住时是 0, 原地挨打放特效时是 1
+STATIC_MAX_DIFF = 1.0                        # 静止段任意两帧的中位差不大于这个; 试采是 0
 
 
 def adb_input(serial, cmd):
@@ -100,11 +100,11 @@ def on_foot(im):
 
 
 def scene_diff(a, b):
-    """两张图中央区的灰度平均差, 尺寸不同也能比。"""
+    """两张图中央区灰度差的中位数, 尺寸不同也能比。用中位数: 人没走时角色身上的特效把平均差抬到 13, 背景不动中位数还是 1, 而转视角最少也有 4。"""
     def g(im):
         w, h = im.size
         return np.asarray(im.crop((int(SCENE[0] * w), int(SCENE[1] * h), int(SCENE[2] * w), int(SCENE[3] * h))).convert("L").resize((240, 130)), float)
-    return round(float(np.abs(g(a) - g(b)).mean()), 2)
+    return round(float(np.median(np.abs(g(a) - g(b)))), 2)
 
 
 def swipe_cmd(x0, y0, x1, y1, ms):
@@ -286,6 +286,7 @@ def main():
     ap.add_argument("serial")
     ap.add_argument("--pkg", default="com.miHoYo.Yuanshen")
     ap.add_argument("--clips", type=int, default=16)
+    ap.add_argument("--motions", default=",".join(MOTIONS), help="逗号分隔, 按段轮换; 补采某种运动时用")
     ap.add_argument("--frames", type=int, default=420)
     ap.add_argument("--walk-s", type=float, default=60)
     ap.add_argument("--stride", type=int, default=30)
@@ -296,6 +297,9 @@ def main():
     ap.add_argument("--retries", type=int, default=2, help="一段没核对过时最多重采几次")
     ap.add_argument("--workers", type=int, default=6)
     a = ap.parse_args()
+    motions = a.motions.split(",")
+    if set(motions) - set(MOTIONS):
+        ap.error(f"--motions 只能取 {MOTIONS}")
     rng = random.Random(a.seed)
     out = os.path.join(os.environ.get("PF_JOB_OUT") or os.path.join(ROOT, "_runs"), f"fd_capture_{time.strftime('%Y%m%d-%H%M%S')}")
     os.makedirs(os.path.join(out, "clips"))
@@ -347,7 +351,7 @@ def main():
         rec["temps"].append(fp.temps(dev, "in_world"))
         step("已进世界")
         for i in range(a.clips):
-            motion = MOTIONS[i % len(MOTIONS)]
+            motion = motions[i % len(motions)]
             label = f"c{i:02d}_{motion}"
             t = fp.temps(dev, label)
             rec["temps"].append(t)
