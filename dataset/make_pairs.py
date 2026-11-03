@@ -5,12 +5,14 @@
         [--batch gi-YYYYMMDD-01 ...] [--exclude 排除清单 ...] [--labels 场景标签 ...] [--test-seg <batch>:<段号> ...]
         [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr] [--no-preview]
 
-输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json)。多批按命令行顺序拼接;
+输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json), 或 capture_framedump.py 的产物目录或它的 key/ (含 clips.json)。多批按命令行顺序拼接;
 --batch、--exclude、--labels 重复时与输入一一对应。每批帧号和段号各自从 0 起, 内部把段号加上偏移 (保持 % 5 不变) 变成
 全数据集唯一, 清单里仍记原批帧号和 batch_segment; 新批首帧不与上一批比冻结。
 --labels 是人看图写的场景标签, 写进清单 tags: 每行 <帧号或 a-b> <scene_type> <pose> <lighting> [inferred] (inferred: 光照没看到天空, 由时间线推断)。
 tags.motion 优先取采集 manifest 的 motion (来自输入记录), 没有这一列时有标签的帧是 static (停稳后截图)。HUD 排除框按 batch.json 的包名选, 没标过的游戏拒绝;
 --hr-size 必须等于批次记录的实际渲染尺寸 (记录为空时不查)。
+framedump 输入 (§3.5): 帧就是送显图, HR 直接用, 不再缩放; 帧可以是 .raw (按 clips.json 的宽高和 vk_format 读, 丢掉 alpha) 或已转好的 PNG。每段是一个连续片段, 相邻帧不算独立样本:
+  只有 clips.json 标了 key 的帧 (缺省每 0.5 秒一帧) 做 QA、切块、发布, 其余帧不要求在本机, 哈希和帧号留在发布目录的 clips.json 里。片段内不判冻结。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
   HR = 原生截图 (屏幕分辨率) LANCZOS 缩到游戏送显尺寸 --hr-size;
   LR = HR 经 BOX 缩到 --lr-size (Game Mode 0.56 时游戏实际渲染尺寸); source.kind=hr_downsampled。
@@ -121,9 +123,21 @@ def tiles(w, h, t, boxes):
 
 
 def derive(src, a):
-    """HR = 截图 LANCZOS 到 --hr-size, LR = HR BOX 到 --lr-size (确定性, 发布时按原件重算, 不在内存里囤整批)。"""
-    hr = src.resize(a.hr_size, Image.LANCZOS)
+    """HR = 截图 LANCZOS 到 --hr-size (framedump 帧已是这个尺寸, 不动), LR = HR BOX 到 --lr-size (确定性, 发布时按原件重算, 不在内存里囤整批)。"""
+    hr = src if src.size == a.hr_size else src.resize(a.hr_size, Image.LANCZOS)
     return hr, hr.resize(a.lr_size, Image.BOX)
+
+
+RGB_ORDER = {37: (0, 1, 2), 44: (2, 1, 0)}   # framedump 的 vk_format → R, G, B 在每像素 4 字节里的位置
+
+
+def open_frame(r):
+    """读一帧成 RGB; .raw 按 RGBA 读, alpha 不全是 255 (屏幕上不起作用), 丢掉。"""
+    p = os.path.join(r["frames_dir"], r["file"])
+    if p.endswith(".raw"):
+        a = np.frombuffer(open(p, "rb").read(), np.uint8).reshape(r["h"], r["w"], 4)
+        return Image.fromarray(a[..., RGB_ORDER[r["vk_format"]]])
+    return Image.open(p).convert("RGB")
 
 
 def label(img, text):
@@ -179,7 +193,24 @@ def previews(root, items, a, hud_boxes, n_sheet=24, n_crop=4, crop=(240, 160), z
     return meta
 
 
+def framedump_rows(path):
+    """clips.json → 关键帧的行, 字段和 manifest.jsonl 一样; 每段是一个 segment。"""
+    rows = []
+    for seg, c in enumerate(json.load(open(path))["clips"]):
+        for f in c["frames"]:
+            if f["key"]:
+                rows.append({"i": f["frame"], "file": f["file"], "ts_ms": round(c["wall_t0"] * 1000 + (f["t_ns"] - c["t0_ns"]) / 1e6), "step": f["seq"], "state": "explore",
+                             "w": c["w"], "h": c["h"], "vk_format": c["vk_format"], "bytes": f["bytes"], "sha256": f["sha256"], "segment": seg, "motion": c["motion"], "clip": c["label"], "continuous": True})
+    return rows
+
+
 def find_capture(src):
+    cj = sorted(glob.glob(os.path.join(src, "**", "clips.json"), recursive=True))
+    if cj:
+        cj = [p for p in cj if os.path.basename(os.path.dirname(p)) != "key"] or cj   # 产物目录里 key/ 也有一份
+        if len(cj) != 1:
+            sys.exit(f"{src} 下应恰有一个 clips.json, 找到 {len(cj)} 个")
+        return os.path.dirname(cj[0]), framedump_rows(cj[0]), json.load(open(os.path.join(os.path.dirname(cj[0]), "batch.json")))
     ms = sorted(glob.glob(os.path.join(src, "**", "manifest.jsonl"), recursive=True))
     if len(ms) != 1:
         sys.exit(f"{src} 下应恰有一个 manifest.jsonl, 找到 {len(ms)} 个")
@@ -202,6 +233,7 @@ def main():
     ap.add_argument("--psnr-min", type=float, default=28.0)
     ap.add_argument("--breaker", type=float, default=0.05)
     ap.add_argument("--test-segments", type=int, default=None, help="路线末尾留作 test 的段数, 缺省 max(1, 段数的 10%%)")
+    ap.add_argument("--no-guard", action="store_true", help="--test-seg 不丢相邻段 (framedump: 段与段之间走动换了地方, 不是相邻帧)")
     ap.add_argument("--write-lr", action="store_true", help="模拟 LR 也落盘 (缺省只存配方)")
     ap.add_argument("--exclude", action="append", default=[],
                     help="人工看图排除的帧: 每行 <帧号或 a-b> <原因>, # 开头为注释 (菜单/对话/加载页等, §3.8 有效画面); 多批时逐批给")
@@ -237,7 +269,7 @@ def main():
         for r in batch_rows:   # 段号全数据集唯一, 偏移取 VAL_MOD 的倍数使 val 规则不变
             r.update(batch_id=batch_id, frames_dir=frames_dir, batch_segment=r["segment"], segment=seg_base + r["segment"])
         rows += batch_rows
-        batches.append({"id": batch_id, "capture": batch.get("capture"), "meta": {k2: batch.get(k2) for k2 in (
+        batches.append({"id": batch_id, "capture_method": batch.get("capture_method", "screencap"), "capture": batch.get("capture"), "meta": {k2: batch.get(k2) for k2 in (
             "node_id", "job_id", "experiment_commit", "research", "package", "version_name", "version_code", "fingerprint",
             "android", "platform", "gles", "screen", "render_size", "graphics_prefs")}})
         seg_base += (max(r["batch_segment"] for r in batch_rows) // VAL_MOD + 1) * VAL_MOD
@@ -253,7 +285,12 @@ def main():
     root = os.path.join(a.out, f"{a.name}-v{a.version}")
     if os.path.exists(os.path.join(root, "qa_report.json")):
         sys.exit(f"{root} 已存在; 版本发布后不改, 换 --version")
-    derivation = {"hr": {"from": "screencap", "kernel": "PIL.LANCZOS", "size": [hw, hh]},
+    methods = {b["capture_method"] for b in batches}
+    if len(methods) != 1:
+        sys.exit(f"一个版本只放一种采集方法, 现在是 {sorted(methods)}")
+    capture_method = methods.pop()
+    source_kind = "hr_downsampled" if capture_method == "screencap" else "hr_native"
+    derivation = {"hr": {"from": capture_method, "kernel": "PIL.LANCZOS" if capture_method == "screencap" else None, "size": [hw, hh]},
                   "lr": {"from": "hr", "kernel": "PIL.BOX", "size": [lw, lh]},
                   "scale": [hw / lw, hh / lh], "pixel_center": "PIL 像素中心 (x+0.5)/w 映射", "colorspace": "sRGB8"}
 
@@ -270,9 +307,10 @@ def main():
             err = "sha256"
         else:
             try:
-                with Image.open(p) as im:
-                    if im.format != "PNG" or im.size != (r["w"], r["h"]):
-                        err = "format_or_size"
+                if not p.endswith(".raw"):
+                    with Image.open(p) as im:
+                        if im.format != "PNG" or im.size != (r["w"], r["h"]):
+                            err = "format_or_size"
             except OSError:
                 err = "decode"
         if err:
@@ -288,10 +326,10 @@ def main():
         except KeyError as e:
             sys.exit(f"--test-seg 没有这一段: {e}")
         batch_of = {r["segment"]: r["batch_id"] for r in rows}
-        guard_segs = sorted({n for s in test_segs for n in (s - 1, s + 1)
-                             if n in batch_of and batch_of[n] == batch_of[s] and n not in test_segs})
+        guard_segs = [] if a.no_guard else sorted({n for s in test_segs for n in (s - 1, s + 1)
+                                                   if n in batch_of and batch_of[n] == batch_of[s] and n not in test_segs})
         test_rule = f"人选 {len(test_segs)} 段 (每种场景类型至少一个)"
-        guard_rule = "test 同批前后相邻段, 丢弃"
+        guard_rule = "不设: 段与段之间走动换了地方" if a.no_guard else "test 同批前后相邻段, 丢弃"
     else:
         n_test = a.test_segments if a.test_segments is not None else max(1, round(len(segs) * 0.1))
         test_segs = segs[-n_test:] if n_test else []
@@ -332,8 +370,8 @@ def main():
         if r.get("diff_prev") is not None and r["diff_prev"] < DUP_THRESH:
             drops["frozen"] += 1
             continue
-        src = Image.open(os.path.join(r["frames_dir"], r["file"])).convert("RGB")
-        if r.get("diff_prev") is None:   # 采集端没算 (cruise): 离线按同一定义算, 与上一保留帧比
+        src = open_frame(r)
+        if r.get("diff_prev") is None and not r.get("continuous"):   # 采集端没算 (cruise): 离线按同一定义算, 与上一保留帧比
             th = np.asarray(src.convert("L").resize((64, 36), Image.BILINEAR), dtype=np.float64)
             if prev_thumb is not None and np.abs(th - prev_thumb).mean() < DUP_THRESH:
                 drops["frozen"] += 1
@@ -410,10 +448,25 @@ def main():
 
     index, shown = [], []
     frames = [f for f in frames if f["split"] != "guard"]   # guard 段只隔开 test, 不落盘
+    clip_info, clip_all = [], {"schema": "hgamey/framedump-clips@1", "clips": []}   # framedump: 每段的全部帧 (含没发布的), 帧号和哈希留在 clips.json
+    for b_i, src in enumerate(a.src):
+        frames_dir, _, _ = find_capture(src)
+        if not os.path.exists(os.path.join(frames_dir, "clips.json")):
+            continue
+        batch_id = batches[b_i]["id"]
+        for c in json.load(open(os.path.join(frames_dir, "clips.json")))["clips"]:
+            seg = next(r["segment"] for r in rows if r["batch_id"] == batch_id and r.get("clip") == c["label"])
+            if split_of.get(seg, "guard") == "guard":
+                continue
+            kept = [x for x in c["frames"] if (batch_id, x["frame"]) not in excluded]
+            ts = [x["t_ns"] for x in kept]
+            clip_info.append({"batch": batch_id, "label": c["label"], "segment": seg, "split": split_of[seg], "motion": c["motion"], "frames_total": len(kept), "frames_excluded": len(c["frames"]) - len(kept),
+                              "first_frame": kept[0]["frame"], "last_frame": kept[-1]["frame"], "span_s": round((ts[-1] - ts[0]) / 1e9, 3), "gaps": sum(x["gap_before"] for x in kept), "png_bytes": sum(x["bytes"] for x in kept)})
+            clip_all["clips"].append({"batch": batch_id, "segment": seg, "label": c["label"], "motion": c["motion"], "frames": [{k: x[k] for k in ("frame", "t_ns", "dt_ns", "gap_before", "file", "bytes", "sha256", "raw_sha256")} for x in kept]})
     for f in frames:
         r, seg = f["r"], f["r"]["segment"]
         batch_id = r["batch_id"]
-        f["hr"], f["lr"] = derive(Image.open(os.path.join(r["frames_dir"], r["file"])).convert("RGB"), a)
+        f["hr"], f["lr"] = derive(open_frame(r), a)
         scene = f"seg{seg:03d}"
         d = os.path.join(root, "batches", batch_id, scene)
         os.makedirs(os.path.join(d, "hr"), exist_ok=True)
@@ -432,8 +485,8 @@ def main():
         shown.append((hp, f"seg{seg:03d} f{r['i']} {f['split']}"))
         f.pop("hr"), f.pop("lr")
         index.append({
-            "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind="hr_downsampled",
-                           capture_method="screencap", ts_ms=r["ts_ms"], step=r["step"]),
+            "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind=source_kind,
+                           capture_method=capture_method, ts_ms=r["ts_ms"], step=r["step"], **({"clip": r["clip"]} if r.get("clip") else {})),
             "derivation": derivation,
             "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": None},
             "tags": {"scene_type": None, "motion": None, "lighting": None, **labels.get((batch_id, r["i"]), {}),
@@ -447,7 +500,7 @@ def main():
                   open(os.path.join(root, "batches", batch_id, scene, "meta.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-manifest@1", "dataset": f"{a.name}-v{a.version}", "version": a.version,
                "batches": batches,
-               "source_kind": "hr_downsampled", "derivation": derivation, "frames": index},
+               "source_kind": source_kind, "derivation": derivation, "frames": index, **({"clips": clip_info} if clip_info else {})},
               open(os.path.join(root, "manifest.json"), "w"), ensure_ascii=False, indent=1)
     json.dump({"schema": "hgamey/dataset-split@1", "dataset": f"{a.name}-v{a.version}", "fingerprint": fingerprint,
                "rule": {"test": test_rule, "guard": guard_rule, "val": f"segment % {VAL_MOD} == {VAL_REM}",
@@ -460,6 +513,8 @@ def main():
                "frames": [{"path": e["path"], "split": e["split"], "segment": f["r"]["segment"],
                            "tiles": [[tt["x"], tt["y"]] for tt in f["tiles"]]} for e, f in zip(index, frames)]},
               open(os.path.join(root, "split.json"), "w"), ensure_ascii=False, indent=1)
+    if clip_info:
+        json.dump(clip_all, open(os.path.join(root, "clips.json"), "w"), ensure_ascii=False)
     if not a.no_preview:
         previews(root, shown, a, hud_boxes)
     print(json.dumps({"dataset": root, "frames": len(frames), "splits": {s: (v["frames"], v["tiles"]) for s, v in split_n.items()},
