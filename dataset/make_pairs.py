@@ -5,14 +5,15 @@
         [--batch gi-YYYYMMDD-01 ...] [--exclude 排除清单 ...] [--labels 场景标签 ...] [--test-seg <batch>:<段号> ...]
         [--hr-size 2141x969] [--lr-size 1505x681] [--tile 256] [--psnr-min 28] [--breaker 0.05] [--test-segments N] [--write-lr] [--no-preview]
 
-输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json), 或 capture_framedump.py 的产物目录或它的 key/ (含 clips.json)。多批按命令行顺序拼接;
+输入: capture_native.sh 的产物目录 (含 capture-*/frames/manifest.jsonl, 可选 batch.json), capture_framedump.py 的产物目录或它的 key/ (含 clips.json),
+或 framedump 的原始段目录 (每段 session.json、index.csv、summary.json、f*.raw, 如 framedump_probe.py 的产物)。多批按命令行顺序拼接;
 --batch、--exclude、--labels 重复时与输入一一对应。每批帧号和段号各自从 0 起, 内部把段号加上偏移 (保持 % 5 不变) 变成
 全数据集唯一, 清单里仍记原批帧号和 batch_segment; 新批首帧不与上一批比冻结。
 --labels 是人看图写的场景标签, 写进清单 tags: 每行 <帧号或 a-b> <scene_type> <pose> <lighting> [inferred] (inferred: 光照没看到天空, 由时间线推断)。
 tags.motion 优先取采集 manifest 的 motion (来自输入记录), 没有这一列时有标签的帧是 static (停稳后截图)。HUD 排除框按 batch.json 的包名选, 没标过的游戏拒绝;
 --hr-size 必须等于批次记录的实际渲染尺寸 (记录为空时不查)。
-framedump 输入 (§3.5): 帧就是送显图, HR 直接用, 不再缩放; 帧可以是 .raw (按 clips.json 的宽高和 vk_format 读, 丢掉 alpha) 或已转好的 PNG。每段是一个连续片段, 相邻帧不算独立样本:
-  只有 clips.json 标了 key 的帧 (缺省每 0.5 秒一帧) 做 QA、切块、发布, 其余帧不要求在本机, 哈希和帧号留在发布目录的 clips.json 里。片段内不判冻结。
+framedump 输入 (§3.5): 帧就是送显图, HR 直接用, 不再缩放; 帧可以是 .raw (按 session.json 的宽高和 vk_format 读, 丢掉 alpha) 或已转好的 PNG。每段是一个连续片段, 相邻帧不算独立样本:
+  只有关键帧 (clips.json 标了 key, 原始段按 --stride 取, 缺省每 0.5 秒一帧) 做 QA、切块、发布, 其余帧不要求在本机, 哈希和帧号留在发布目录的 clips.json 里。片段内不判冻结。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
   HR = 原生截图 (屏幕分辨率) LANCZOS 缩到游戏送显尺寸 --hr-size;
   LR = HR 经 BOX 缩到 --lr-size (Game Mode 0.56 时游戏实际渲染尺寸); source.kind=hr_downsampled。
@@ -34,6 +35,7 @@ QA (§3.8, 规则沿用 SPEC_SR_LOOP §4.1, 倍率换成约 1.42):
   退出码 0 发布, 2 用法/输入错, 3 熔断。
 """
 import argparse
+import csv
 import datetime
 import glob
 import hashlib
@@ -193,24 +195,58 @@ def previews(root, items, a, hud_boxes, n_sheet=24, n_crop=4, crop=(240, 160), z
     return meta
 
 
-def framedump_rows(path):
-    """clips.json → 关键帧的行, 字段和 manifest.jsonl 一样; 每段是一个 segment。"""
+def raw_clips(src, stride):
+    """原始段目录 → 和 clips.json 一样的结构; 只给关键帧算哈希 (一段几 GB)。没有 summary.json 的段不完整, 整段不要 (§3.8)。"""
+    clips = []
+    for p in sorted(glob.glob(os.path.join(src, "**", "session.json"), recursive=True)):
+        d = os.path.dirname(p)
+        if not os.path.exists(os.path.join(d, "index.csv")):
+            continue
+        if not os.path.exists(os.path.join(d, "summary.json")):
+            print(f"{d} 没有 summary.json, 整段作废", file=sys.stderr)
+            continue
+        s = json.load(open(p))
+        rows = [r for r in csv.DictReader(open(os.path.join(d, "index.csv"))) if r["file"].endswith(".raw")]
+        frames = []
+        for n, r in enumerate(rows):
+            fp = os.path.join(d, r["file"])
+            key = n % stride == 0
+            frames.append({"seq": int(r["seq"]), "frame": int(r["frame"]), "t_ns": int(r["t_ns"]), "dt_ns": int(r["dt_ns"]), "gap_before": int(r["gap_before"]), "file": os.path.relpath(fp, src),
+                           "bytes": s["w"] * s["h"] * 4, "sha256": sha256_file(fp) if key else None, "raw_sha256": None, "key": key})
+        clips.append({"label": os.path.basename(d), "motion": None, "w": s["w"], "h": s["h"], "vk_format": s["vk_format"], "pre_transform": s.get("pre_transform"), "wall_t0": 0, "t0_ns": 0, "frames": frames})
+    return clips
+
+
+def framedump_rows(clips):
+    """段列表 → 关键帧的行, 字段和 manifest.jsonl 一样; 每段是一个 segment。"""
     rows = []
-    for seg, c in enumerate(json.load(open(path))["clips"]):
+    for seg, c in enumerate(clips):
         for f in c["frames"]:
             if f["key"]:
                 rows.append({"i": f["frame"], "file": f["file"], "ts_ms": round(c["wall_t0"] * 1000 + (f["t_ns"] - c["t0_ns"]) / 1e6), "step": f["seq"], "state": "explore",
-                             "w": c["w"], "h": c["h"], "vk_format": c["vk_format"], "bytes": f["bytes"], "sha256": f["sha256"], "segment": seg, "motion": c["motion"], "clip": c["label"], "continuous": True})
+                             "w": c["w"], "h": c["h"], "vk_format": c["vk_format"], "pre_transform": c.get("pre_transform"), "bytes": f["bytes"], "sha256": f["sha256"], "segment": seg, "motion": c["motion"], "clip": c["label"], "continuous": True})
     return rows
 
 
-def find_capture(src):
-    cj = sorted(glob.glob(os.path.join(src, "**", "clips.json"), recursive=True))
+def find_framedump(src, stride):
+    """framedump 输入 → (帧目录, 段列表, batch.json 内容); 不是就返回 None。"""
+    cj = [p for p in sorted(glob.glob(os.path.join(src, "**", "clips.json"), recursive=True))]
+    cj = [p for p in cj if os.path.basename(os.path.dirname(p)) != "key"] or cj   # 产物目录里 key/ 也有一份
+    if len(cj) > 1:
+        sys.exit(f"{src} 下应恰有一个 clips.json, 找到 {len(cj)} 个")
     if cj:
-        cj = [p for p in cj if os.path.basename(os.path.dirname(p)) != "key"] or cj   # 产物目录里 key/ 也有一份
-        if len(cj) != 1:
-            sys.exit(f"{src} 下应恰有一个 clips.json, 找到 {len(cj)} 个")
-        return os.path.dirname(cj[0]), framedump_rows(cj[0]), json.load(open(os.path.join(os.path.dirname(cj[0]), "batch.json")))
+        return os.path.dirname(cj[0]), json.load(open(cj[0]))["clips"], json.load(open(os.path.join(os.path.dirname(cj[0]), "batch.json")))
+    clips = raw_clips(src, stride)
+    if not clips:
+        return None
+    bs = glob.glob(os.path.join(src, "**", "batch.json"), recursive=True)
+    return src, clips, dict(json.load(open(bs[0])) if bs else {}, capture_method="framedump")
+
+
+def find_capture(src, stride=30):
+    fd = find_framedump(src, stride)
+    if fd:
+        return fd[0], framedump_rows(fd[1]), fd[2]
     ms = sorted(glob.glob(os.path.join(src, "**", "manifest.jsonl"), recursive=True))
     if len(ms) != 1:
         sys.exit(f"{src} 下应恰有一个 manifest.jsonl, 找到 {len(ms)} 个")
@@ -233,6 +269,7 @@ def main():
     ap.add_argument("--psnr-min", type=float, default=28.0)
     ap.add_argument("--breaker", type=float, default=0.05)
     ap.add_argument("--test-segments", type=int, default=None, help="路线末尾留作 test 的段数, 缺省 max(1, 段数的 10%%)")
+    ap.add_argument("--stride", type=int, default=30, help="原始段的关键帧间隔 (帧), 相邻帧不算独立样本")
     ap.add_argument("--no-guard", action="store_true", help="--test-seg 不丢相邻段 (framedump: 段与段之间走动换了地方, 不是相邻帧)")
     ap.add_argument("--write-lr", action="store_true", help="模拟 LR 也落盘 (缺省只存配方)")
     ap.add_argument("--exclude", action="append", default=[],
@@ -253,9 +290,9 @@ def main():
                 lo, _, hi = rng.partition("-")
                 for i in range(int(lo), int(hi or lo) + 1):
                     yield i, rest.strip()
-    rows, batches, seg_base, excluded, labels = [], [], 0, {}, {}
+    rows, batches, seg_base, excluded, labels, methods = [], [], 0, {}, {}, set()
     for k, src in enumerate(a.src):
-        frames_dir, batch_rows, batch = find_capture(src)
+        frames_dir, batch_rows, batch = find_capture(src, a.stride)
         if not batch_rows:
             sys.exit(f"{src} 的 manifest 为空")
         day = datetime.datetime.fromtimestamp(batch_rows[0]["ts_ms"] / 1000, datetime.timezone.utc).strftime("%Y%m%d")
@@ -269,7 +306,8 @@ def main():
         for r in batch_rows:   # 段号全数据集唯一, 偏移取 VAL_MOD 的倍数使 val 规则不变
             r.update(batch_id=batch_id, frames_dir=frames_dir, batch_segment=r["segment"], segment=seg_base + r["segment"])
         rows += batch_rows
-        batches.append({"id": batch_id, "capture_method": batch.get("capture_method", "screencap"), "capture": batch.get("capture"), "meta": {k2: batch.get(k2) for k2 in (
+        methods.add(batch.get("capture_method", "screencap"))
+        batches.append({"id": batch_id, "capture": batch.get("capture"), "meta": {k2: batch.get(k2) for k2 in (
             "node_id", "job_id", "experiment_commit", "research", "package", "version_name", "version_code", "fingerprint",
             "android", "platform", "gles", "screen", "render_size", "graphics_prefs")}})
         seg_base += (max(r["batch_segment"] for r in batch_rows) // VAL_MOD + 1) * VAL_MOD
@@ -285,7 +323,6 @@ def main():
     root = os.path.join(a.out, f"{a.name}-v{a.version}")
     if os.path.exists(os.path.join(root, "qa_report.json")):
         sys.exit(f"{root} 已存在; 版本发布后不改, 换 --version")
-    methods = {b["capture_method"] for b in batches}
     if len(methods) != 1:
         sys.exit(f"一个版本只放一种采集方法, 现在是 {sorted(methods)}")
     capture_method = methods.pop()
@@ -450,11 +487,11 @@ def main():
     frames = [f for f in frames if f["split"] != "guard"]   # guard 段只隔开 test, 不落盘
     clip_info, clip_all = [], {"schema": "hgamey/framedump-clips@1", "clips": []}   # framedump: 每段的全部帧 (含没发布的), 帧号和哈希留在 clips.json
     for b_i, src in enumerate(a.src):
-        frames_dir, _, _ = find_capture(src)
-        if not os.path.exists(os.path.join(frames_dir, "clips.json")):
+        fd = find_framedump(src, a.stride)
+        if not fd:
             continue
         batch_id = batches[b_i]["id"]
-        for c in json.load(open(os.path.join(frames_dir, "clips.json")))["clips"]:
+        for c in fd[1]:
             seg = next(r["segment"] for r in rows if r["batch_id"] == batch_id and r.get("clip") == c["label"])
             if split_of.get(seg, "guard") == "guard":
                 continue
@@ -488,7 +525,7 @@ def main():
             "source": dict(meta_of[batch_id], batch=batch_id, scene=scene, batch_segment=r["batch_segment"], frame=r["i"], kind=source_kind,
                            capture_method=capture_method, ts_ms=r["ts_ms"], step=r["step"], **({"clip": r["clip"]} if r.get("clip") else {})),
             "derivation": derivation,
-            "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": None},
+            "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": r.get("pre_transform")},
             "tags": {"scene_type": None, "motion": None, "lighting": None, **labels.get((batch_id, r["i"]), {}),
                      **({"motion": r["motion"]} if r.get("motion") else {}), "hud": "standard",
                      "time_weather": None, "auto_luma_mean": f["luma_mean"]},
