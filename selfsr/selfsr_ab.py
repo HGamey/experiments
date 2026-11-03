@@ -982,6 +982,10 @@ def cmd_hold(a, out):
         return 2
 
     dev = Dev(a.serial)
+    # 开跑前清后台 App: am kill-all 只杀后台进程, 不动前台/系统 (2026-11-03 红魔 91253241019A 实测 exit 0、前台焦点不变)。
+    # 防上一轮遗留的 App 在后台抢 CPU/GPU/内存, 拉偏两臂功耗与帧率 (事故: megacity 后台残留覆盖了他人基线窗口)。
+    dev.shell("am kill-all")
+    note("am kill-all: 已清后台 App")
     ok, info = layer_absent(dev, a.pkg)
     if not ok:
         note(f"开跑前设备上已有层残留, 拒绝开始: {info}")
@@ -1170,6 +1174,10 @@ def main():
     kb = raw[raw.index("--b") + 1] if "--b" in raw else "layer"
 
     dev = Dev(a.serial)
+    # 开跑前清后台 App: am kill-all 只杀后台进程, 不动前台/系统 (2026-11-03 红魔 91253241019A 实测 exit 0、前台焦点不变)。
+    # 防上一轮遗留的 App 在后台抢 CPU/GPU/内存, 拉偏两臂功耗与帧率 (事故: megacity 后台残留覆盖了他人基线窗口)。
+    dev.shell("am kill-all")
+    note("am kill-all: 已清后台 App")
     ok, info = layer_absent(dev, a.pkg)
     if not ok:
         note(f"开跑前设备上已有层残留, 拒绝开始: {info}")

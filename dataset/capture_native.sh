@@ -71,6 +71,9 @@ meta() {  # meta <文件>
   } > "$1"
 }
 meta "$OUT/meta_before.txt"
+# 开跑前清后台 App: am kill-all 只杀后台进程, 不动前台/系统 (2026-11-03 红魔 91253241019A 实测 exit 0、前台焦点不变)。
+# 防上一轮遗留 App 抢资源, 干扰采集期间的帧率/温度/功耗。
+a am kill-all >/dev/null
 # 渲染尺寸: 采集中途几次抓 SurfaceFlinger (只读), 收尾时从游戏图层 Source Crop 解析
 #   (5 s 一查停止标记, 采集结束后探测子进程很快退出, 不留后台 sleep)
 ( s=0; for t in 90 240 480 900; do
