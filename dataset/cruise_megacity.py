@@ -8,8 +8,9 @@
   turn_slow  油门 0, 瞄准摇杆小幅偏移, 按住时截图
   turn_fast  油门 0, 瞄准摇杆大幅偏移, 按住时截图
   flight     油门约一半, 边飞边截图; 每帧都转向, 免得撞墙后一直贴着墙
-段首先换个地方: 大转向后全速飞 RELOCATE_S 秒, 否则悬停的段都停在同一处。上一帧几乎全黑或飞行中画面不动 (撞在结构下面)
-就抬头掉头再飞 (escapes)。只发 input swipe, 不碰左上角设置。
+段首先换个地方: 大转向后全速飞 RELOCATE_S 秒, 否则悬停的段都停在同一处。上一帧几乎全黑或飞行中画面不动 (撞墙或卡在结构下面)
+就掉头再飞 (escapes)。俯仰总是成对抵消, 保持平飞: 抬头累积后全速爬升会飞出地图边界, 画面变暗并弹出
+「YOU STILL HAVE UNFINISHED BUSINESS HERE」(538fae871694)。警告帧没有自动识别, 看接触表手工排除。只发 input swipe, 不碰左上角设置。
 输出与 cruise.py 同格式: frames/frame_NNNNN.png (screencap 原字节) + frames/manifest.jsonl, 另写 cruise.json 汇总。
 退出码: 0 收满, 1 超时或步数用尽, 2 设备错 (连续截图失败 / 游戏不在前台)。
 """
@@ -29,11 +30,10 @@ PKG = "com.unity.megacity.metro"
 AIM = (0.20, 0.60)                  # 左半屏瞄准摇杆按下点: 偏移越大转得越快, 松手即停
 THROTTLE_X = 0.94                   # 右侧油门滑块: 要按在滑块这一列才算数, 松手保持
 THROTTLE_ZERO, THROTTLE_FLY, THROTTLE_FULL = 0.735, 0.66, 0.585   # y=0.585 约 93, 全速约 10 秒撞墙
-RELOCATE_S, COAST_S = 3.0, 2.0      # 段首全速飞多久; 油门回 0 后等多久才算悬停
+RELOCATE_S, COAST_S = 3.0, 3.0      # 段首全速飞多久; 油门回 0 后等多久才算悬停
 DARK_LUMA, STUCK_DIFF = 28, 8       # 采样点平均亮度低于此算全黑; 相邻帧平均差低于此算飞不动
 SAMPLES = [((x + 0.5) / 10, (y + 0.5) / 6) for y in range(6) for x in range(10)]
 MOTIONS = ("static", "turn_slow", "turn_fast", "flight")
-PITCH_LIMIT = 0.06                  # 俯仰累计偏移上限, 免得一直朝天或朝地
 
 
 def swipe(serial, w, h, x, y, dx, dy, ms, wait=True):
@@ -80,7 +80,7 @@ def main():
     kept = steps = grab_fail = portrait = dups = not_fg = 0
     counts = dict.fromkeys(MOTIONS, 0)
     prev_sha, stop = None, "max_steps"
-    throttle, pitch, escapes, lost = THROTTLE_ZERO, 0.0, 0, False
+    throttle, tilt, escapes, lost = THROTTLE_ZERO, 0.0, 0, False
     w, h, prev_luma = 0, 0, None
 
     def set_throttle(want):
@@ -99,21 +99,24 @@ def main():
         if w:
             first = kept % SEGMENT_FRAMES == 0
             side = rng.choice((-1, 1))
-            if lost:   # 抬头掉头
-                swipe(a.serial, w, h, *AIM, side * 0.14, -0.05, 800)
-                pitch = -0.05
+            if lost:   # 掉头
+                swipe(a.serial, w, h, *AIM, side * 0.14, 0, 800)
                 escapes += 1
             if first or lost:   # 换个地方再开始
-                swipe(a.serial, w, h, *AIM, side * rng.uniform(0.06, 0.12), 0, 500)
+                swipe(a.serial, w, h, *AIM, side * rng.uniform(0.06, 0.12), -tilt, 500)
+                tilt = 0.0
                 set_throttle(THROTTLE_FULL)
                 time.sleep(RELOCATE_S)
                 set_throttle(THROTTLE_FLY if motion == "flight" else THROTTLE_ZERO)
                 if motion != "flight":
                     time.sleep(COAST_S)
             lost = False
-            dy = rng.uniform(-0.02, 0.02)
-            if abs(pitch + dy) > PITCH_LIMIT:
-                dy = -dy
+            dy = 0.0
+            if motion in ("static", "flight"):
+                if tilt:
+                    dy, tilt = -tilt, 0.0   # 还原上一帧的俯仰
+                else:
+                    dy = tilt = rng.choice((-1, 1)) * rng.uniform(0.01, 0.03)
             if motion == "turn_slow":
                 hold = swipe(a.serial, w, h, *AIM, side * 0.03, 0, 1800, wait=False)
                 time.sleep(0.7)
@@ -122,11 +125,9 @@ def main():
                 time.sleep(0.5)
             elif motion == "flight":
                 swipe(a.serial, w, h, *AIM, side * rng.uniform(0.02, 0.08), dy, 400)
-                pitch += dy
                 time.sleep(1.5)
             else:
                 swipe(a.serial, w, h, *AIM, side * rng.uniform(0.01, 0.04), dy, 400)
-                pitch += dy
                 time.sleep(a.settle_ms / 1000)
         png = adb(a.serial, "exec-out", "screencap -p", binary=True, timeout=60)
         if hold:
