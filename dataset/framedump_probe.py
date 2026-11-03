@@ -6,7 +6,7 @@
           experiment dataset/framedump_probe.py <serial> --frames 60
 
 --arm native 只开 framedump; gamemode 加 Game Mode 降到 --scale; selfsr 再加 debug.knobs.selfsr=--sr。
-开段前量两种基线帧率 (不动、走动); 开段后先不动截 2 张图 (带 CLOCK_MONOTONIC 前后时刻, 用来和同时刻的帧比), 再转视角加走动到段结束。
+开段前量两种基线帧率 (不动、走动); 开段后先不动截 1 张图 (带 CLOCK_MONOTONIC 前后时刻, 用来和同时刻的帧比), 再转视角加走动到段结束。
 产物 ($PF_JOB_OUT/fd_<arm>_<时间>/): report.json, session.json, index.csv, summary.json, raw.sha256, logcat.txt,
   shot_*.png, sample/f*.raw (抽帧), segment.tar (--keep-all 才有, 整段原始帧)。手机上的输出目录读回后删除。
 收尾 (含出错): 停会话摘层、清 debug.knobs.*、还原 Game Mode 和音量、强停游戏、删输出目录, 逐项回读写进 report.json 的 restore。
@@ -51,9 +51,10 @@ THERMAL_TYPES = {"0": "cpu", "1": "gpu", "2": "battery", "3": "skin"}
 
 
 def temps(dev, tag):
-    """thermalservice 前面的是缓存值, 不更新; 取 HAL 那一节, 每类取最高。"""
+    """thermalservice 开头的 Cached 是缓存值, 不更新; 只取「Current temperatures from HAL」这一节, 每类取最高。"""
     by = {}
-    for v, ty in re.findall(r"mValue=([0-9.]+), mType=(\d+), mName=", dev.shell("dumpsys thermalservice").split("from HAL")[-1]):
+    text = dev.shell("dumpsys thermalservice").split("Current temperatures from HAL:")[-1].split("Current cooling devices")[0]
+    for v, ty in re.findall(r"mValue=([0-9.]+), mType=(\d+), mName=", text):
         if ty in THERMAL_TYPES:
             by[THERMAL_TYPES[ty]] = max(by.get(THERMAL_TYPES[ty], 0), round(float(v), 1))
     return {"at": tag, "t": round(time.time(), 1), "battery_dumpsys_c": ab.batt_temp_c(dev), **by}
@@ -192,7 +193,7 @@ def main():
         fps_during = {}
         thr = threading.Thread(target=lambda: fps_during.update(layer_fps(ab.Dev(a.serial), layer, 6) or {}), daemon=True)
         thr.start()
-        for i in range(2):   # 不动时截图, 带前后时刻, 离线和同时刻的帧比
+        for i in range(1):   # 不动时截图, 带前后时刻, 离线和同时刻的帧比
             t0 = now_ns(dev)
             png = subprocess.run(["adb", "-s", a.serial, "exec-out", "screencap -p"], capture_output=True, timeout=60, pass_fds=lock_fds()).stdout
             t1 = now_ns(dev)
@@ -201,11 +202,12 @@ def main():
             rec["shots"].append({"file": name, "t0_ns": t0, "t1_ns": t1, "bytes": len(png), "sha256": hashlib.sha256(png).hexdigest()})
         step("不动时的截图已存, 开始走动")
         deadline, done = time.time() + a.frames / 5 + 120, False
-        side = 1
+        side, rec["move_marks_ns"] = 1, []
         while time.time() < deadline:
             if "summary.json" in dev.su(f"ls {seg} 2>/dev/null | grep -v raw"):
                 done = True
                 break
+            rec["move_marks_ns"].append(now_ns(dev))
             move(dev, a.serial, side)
             side = -side
         rec["t_end"] = time.time()
@@ -237,7 +239,10 @@ def main():
             sh["frames_in_window"] = len(inside)
             pick |= set(inside[:12])
         rec["consecutive"] = files[round(len(files) * 0.75):][:6]   # 走动时的连续几帧
-        pick |= set(rec["consecutive"])
+        rec["consecutive_turn"] = []   # 转视角时的连续几帧: 第 2 次走动开始后约 300 ms 起
+        if len(rec["move_marks_ns"]) >= 2:
+            rec["consecutive_turn"] = [r["file"] for r in rows if r["file"].endswith(".raw") and int(r["t_ns"]) >= rec["move_marks_ns"][1] + 300_000_000][:6]
+        pick |= set(rec["consecutive"]) | set(rec["consecutive_turn"])
         t, bad = time.time(), []
         for n in sorted(pick):
             b = pull_bytes(a.serial, f"{seg}/{n}")
