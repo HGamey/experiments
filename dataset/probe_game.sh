@@ -1,7 +1,7 @@
 #!/bin/sh
 # 探路: 按固定步骤操作一款游戏并逐步截图, 确认进门路径、操作方式和 HUD 位置, 不算采集。
 #   sh dataset/probe_game.sh <serial> <包名> '<步骤>'
-# 步骤用 ; 分隔: s:秒 (等待)  t:x,y (点, 横屏比例坐标)  m:x,y,dx,dy,毫秒 (划或按住, 比例坐标)  shot:名字 (截图)  deny (点权限弹窗的「禁止」)
+# 步骤用 ; 分隔: s:秒 (等待)  t:x,y (点, 横屏比例坐标)  m:x,y,dx,dy,毫秒 (划或按住, 比例坐标)  M:同 m 但不等它结束, 用来在按住时截图  shot:名字 (截图)  deny (点权限弹窗的「禁止」)
 # 产物 ($PF_JOB_OUT/probe_<时间>/): <序号>_<名字>.png, steps.txt, ui_*.xml
 # 不改游戏设置; 媒体音量置 0, 收尾写回, 强停游戏, 开跑前熄屏则熄屏。
 set -u
@@ -37,6 +37,8 @@ for step in $STEPS; do
     t:*) a input tap $(px "${step#t:}") >/dev/null ;;
     m:*) v=${step#m:}; ms=${v##*,}; v=${v%,*}; set -- $(px "$v")
          a input swipe "$1" "$2" "$(($1 + $3))" "$(($2 + $4))" "$ms" >/dev/null ;;
+    M:*) v=${step#M:}; ms=${v##*,}; v=${v%,*}; set -- $(px "$v")
+         a input swipe "$1" "$2" "$(($1 + $3))" "$(($2 + $4))" "$ms" >/dev/null & ;;
     shot:*) adb -s "$SERIAL" exec-out screencap -p > "$OUT/$(printf %02d "$n")_${step#shot:}.png"
             log "focus $(a dumpsys window | grep -m1 mCurrentFocus)" ;;
     deny) a 'uiautomator dump /sdcard/ui.xml >/dev/null; cat /sdcard/ui.xml; rm -f /sdcard/ui.xml' > "$OUT/ui_$n.xml"
@@ -48,6 +50,7 @@ for step in $STEPS; do
   IFS=';'
 done
 unset IFS
+wait
 a dumpsys SurfaceFlinger > "$OUT/sf.txt"
 a am force-stop "$PKG" >/dev/null
 [ -n "$VOL0" ] && a cmd audio set-volume 3 "$VOL0" >/dev/null
