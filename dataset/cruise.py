@@ -10,7 +10,8 @@
 另写 cruise.json 汇总。普通帧记 explore; 复苏页记 revive_dialog, 点击后的首张非复苏页记 revive_transition,
 make_pairs.py 会按 state != explore 自动丢弃。识别失败记 unknown, 不把不确定画面发布进数据集。
 与上一保留帧字节完全相同记冻结跳过, 缩略图差 diff_prev 留 null 由 make_pairs.py 离线算。
-退出码: 0 收满, 1 超时或步数用尽, 2 设备错 (连续截图失败 / 游戏不在前台)。
+--frames 是含复苏/过渡/unknown 的原始保留帧目标, explore_frames 单独记正常状态数, 不代表已通过数据集 QA。
+退出码: 0 收满原始目标, 1 超时或步数用尽, 2 设备错 (连续截图失败 / 游戏不在前台)。
 """
 import argparse
 import hashlib
@@ -71,9 +72,13 @@ def png_samples(b, points):
     wanted = {}
     for y, x, i in xy:
         wanted.setdefault(y, []).append((x, i))
-    raw = zlib.decompress(b"".join(ids))
     stride = w * channels
-    if len(raw) != h * (stride + 1):
+    expected = h * (stride + 1)
+    if expected > 256 * 1024 * 1024:
+        return None
+    dec = zlib.decompressobj()
+    raw = dec.decompress(b"".join(ids), expected + 1)
+    if len(raw) != expected or dec.unconsumed_tail or not dec.eof:
         return None
     out, prev = [None] * len(points), bytearray(stride)
     for y in range(h):
@@ -108,25 +113,27 @@ def png_samples(b, points):
 def revive_dialog(path):
     """共同特征: 中央暗红遮罩 + 底部浅奶油色复苏按钮; 不依赖标题文字。"""
     thumb = path + ".revive-thumb.png"
-    data = None
+    samples = None
     try:
         if SIPS:
-            r = subprocess.run([SIPS, "-s", "format", "png", "-z", "36", "64", path, "--out", thumb],
-                               capture_output=True, timeout=30)
-            if r.returncode == 0:
-                with open(thumb, "rb") as f:
-                    data = f.read()
-        if data is None:
+            try:
+                r = subprocess.run([SIPS, "-s", "format", "png", "-z", "36", "64", path, "--out", thumb],
+                                   capture_output=True, timeout=30)
+                if r.returncode == 0:
+                    with open(thumb, "rb") as f:
+                        samples = png_samples(f.read(), BUTTON_POINTS + RED_POINTS)
+            except (OSError, ValueError, struct.error, zlib.error, subprocess.TimeoutExpired, MemoryError) as e:
+                print(f"缩略图识别失败, 回退原图: {path}: {e}", file=sys.stderr, flush=True)
+        if samples is None or any(p is None for p in samples):
             with open(path, "rb") as f:
-                data = f.read()
-        samples = png_samples(data, BUTTON_POINTS + RED_POINTS)
+                samples = png_samples(f.read(), BUTTON_POINTS + RED_POINTS)
         if samples is None or any(p is None for p in samples):
             return None
         button = sum(min(p) >= 175 and max(p) - min(p) <= 55 for p in samples[:len(BUTTON_POINTS)])
         red = sum(r > 30 and r > 1.25 * g and r > 1.15 * b and g < 120
                   for r, g, b in samples[len(BUTTON_POINTS):])
         return button >= 9 and red >= 8
-    except (OSError, ValueError, zlib.error, subprocess.TimeoutExpired) as e:
+    except (OSError, ValueError, struct.error, zlib.error, subprocess.TimeoutExpired, MemoryError) as e:
         print(f"复苏识别失败: {path}: {e}", file=sys.stderr, flush=True)
         return None
     finally:
@@ -153,6 +160,7 @@ def main():
     t0 = time.time()
     kept = steps = grab_fail = portrait = dups = not_fg = 0
     revive_dialogs = revive_taps = revived = 0
+    state_frames = {"explore": 0, "revive_dialog": 0, "revive_transition": 0, "unknown": 0}
     recovering, last_revive_tap, revive_events = False, 0.0, []
     prev_sha, w, h, stop = None, 0, 0, "max_steps"
     while steps < a.frames * 3:
@@ -200,6 +208,12 @@ def main():
         sha = hashlib.sha256(png).hexdigest()
         if sha == prev_sha:
             dups += 1
+            now = time.time()
+            if recovering and now - last_revive_tap >= 2.0:   # 静止复苏页首次点击丢失时仍要重试
+                adb(a.serial, "shell", f"input tap {int(REVIVE_TAP[0] * w)} {int(REVIVE_TAP[1] * h)}")
+                revive_taps += 1
+                last_revive_tap = now
+                revive_events.append({"ts_ms": int(now * 1000), "frame": max(0, kept - 1), "event": "tap", "duplicate": True})
             continue
         name = f"frame_{kept:05d}.png"
         path = os.path.join(fdir, name)
@@ -212,6 +226,7 @@ def main():
         if dialog:
             if not recovering:
                 revive_dialogs += 1
+                last_revive_tap = 0.0   # 新 episode 不继承上次点击节流
                 revive_events.append({"ts_ms": ts_ms, "frame": kept, "event": "detected"})
             recovering = True
             now = time.time()
@@ -230,6 +245,7 @@ def main():
                               "segment": kept // SEGMENT_FRAMES, "diff_prev": None}) + "\n")
         man.flush()
         prev_sha = sha
+        state_frames[state] += 1
         kept += 1
         extra = f" state={state} 复苏={revived}/{revive_dialogs}" if state != "explore" else ""
         print(f"第{steps}步: 保留 {name} ({w}x{h}, {len(png) // 1024} KB) 进度 {kept}/{a.frames}{extra}",
@@ -240,6 +256,7 @@ def main():
     rep = {"v": 1, "ok": kept >= a.frames, "capturer": "cruise", "frames": kept, "target": a.frames, "steps": steps,
            "grab_failed": grab_fail, "portrait": portrait, "duplicates": dups, "not_foreground": not_fg,
            "revive_dialogs": revive_dialogs, "revive_taps": revive_taps, "revived": revived,
+           "explore_frames": state_frames["explore"], "state_frames": state_frames,
            "revive_events": revive_events, "revive_detector": "sips_thumbnail" if SIPS else "stdlib_png",
            "segment_frames": SEGMENT_FRAMES, "walk_ms": a.walk_ms, "settle_ms": a.settle_ms, "seed": a.seed,
            "wall_s": round(time.time() - t0, 1), "stop_reason": stop, "manifest": os.path.join(fdir, "manifest.jsonl")}
