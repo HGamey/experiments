@@ -48,7 +48,7 @@ def now_ns(dev):
 
 
 def temps(dev, tag):
-    skin = re.search(r"mValue=([0-9.]+), mType=3, mName=skin", dev.shell("dumpsys thermalservice"))
+    skin = re.search(r"mValue=([0-9.]+), mType=3, mName=skin", dev.shell("dumpsys thermalservice").split("from HAL")[-1])   # 前面是缓存值, 不更新
     return {"at": tag, "t": round(time.time(), 1), "battery_c": ab.batt_temp_c(dev), "skin_c": float(skin.group(1)) if skin else None}
 
 
@@ -195,6 +195,9 @@ def main():
         open(os.path.join(out, "logcat.txt"), "w").write(dev.shell("logcat -d -s refknobs | grep -i -E 'framedump|selfsr' | tail -200"))
         step(f"段结束 {done}, 游戏活着 {rec['game_alive_after']}")
         rec["layer_marker"] = ab.session_action(PF, sdir, "marker")
+        st = ab.session_action(PF, sdir, "stop")   # 读回时游戏不用开着, 手机少发热
+        proc.wait(timeout=300)
+        dev.shell(f"am force-stop {a.pkg}")
         for n in ("session.json", "index.csv", "summary.json"):
             open(os.path.join(out, n), "wb").write(pull_bytes(a.serial, f"{seg}/{n}"))
         ls = dev.su(f"ls -l {seg}")
