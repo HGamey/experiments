@@ -1,5 +1,5 @@
 #!/bin/sh
-# 方法 C 原料采集 (DATASET-COLLECTION §3.3): 原神大世界巡航截原生帧, 附整批设备/游戏元数据。
+# 方法 C 原料采集 (DATASET-COLLECTION §3.3): 巡航截原生帧, 附整批设备/游戏元数据。缺省原神大世界; PKG=com.unity.megacity.metro 走 Megacity 飞行巡航。
 #   sh dataset/capture_native.sh <serial> [KEY=VALUE ...]
 # 平台上: pf-node --experiment <提交> --research <研究ID> --device-access write --resource device:<serial> --detach \
 #           experiment dataset/capture_native.sh <serial> FRAMES=300
@@ -9,6 +9,7 @@
 #      但在当前 root 测试机上内核不给该 UHID 设备绑定输入驱动, 手柄注册不上, 采集停在 hid_register, 所以缺省仍用 cruise)
 #      FRAMES (目标保留帧, 缺省 300) SETTLE_MS (每步后等待, 缺省 800) WALK_MS (cruise 每步推摇杆毫秒, 缺省 4000)
 #      SEED (cruise 随机种子, 缺省 0) MODE (phonefarm 用, 缺省 navigate) TIMEOUT_S (缺省 5400) MAX_STEPS (phonefarm 用)
+#      PKG (缺省原神) NODE_ID (写进 batch.json 的 node_id; 任务环境里没有 PF_NODE_ID, 要清单里有就显式给)
 # 产物 ($PF_JOB_OUT/dataset_capture_<时间>/):
 #   frames/{frame_*.png, manifest.jsonl} (cruise) 或 capture-<token>/frames/ (phonefarm)  截图字节不重编码
 #   capture.json capture.log onboard/   巡航报告与进度, 进门记录
@@ -31,24 +32,27 @@ if [ -z "${PF_LOCK_FDS:-}" ]; then
 fi
 for arg in "$@"; do
   case "$arg" in
-    CAPTURER=*|FRAMES=*|SETTLE_MS=*|WALK_MS=*|SEED=*|MODE=*|TIMEOUT_S=*|MAX_STEPS=*) export "$arg" ;;
+    CAPTURER=*|FRAMES=*|SETTLE_MS=*|WALK_MS=*|SEED=*|MODE=*|TIMEOUT_S=*|MAX_STEPS=*|PKG=*|NODE_ID=*) export "$arg" ;;
     *=*) echo "不认识的参数: $arg"; exit 2 ;;
   esac
 done
 CAPTURER="${CAPTURER:-cruise}"; FRAMES="${FRAMES:-300}"; SETTLE_MS="${SETTLE_MS:-800}"; MODE="${MODE:-navigate}"
 TIMEOUT_S="${TIMEOUT_S:-5400}"; MAX_STEPS="${MAX_STEPS:-0}"
-PKG=com.miHoYo.Yuanshen
+PKG="${PKG:-com.miHoYo.Yuanshen}"
 PREFS=/data/data/$PKG/shared_prefs/$PKG.v2.playerprefs.xml
 OUT="${PF_JOB_OUT:-$ROOT/_runs}/dataset_capture_$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 a() { adb -s "$SERIAL" shell "$@" 2>&1 | tr -d '\r'; }
-# 画质档位: playerprefs 里 GENERAL_DATA 的 (entryType, index) 列表, 只读, 不落原文件
+# 画质档位: playerprefs 里 GENERAL_DATA 的 (entryType, index) 列表 (原神) 或 Unity 画质档和分辨率, 只读, 不落原文件
 prefs() {
   a "su -c 'cat $PREFS'" | python3 -I -c '
 import re, sys, urllib.parse
-m = re.search(r"name=\"GENERAL_DATA\">([^<]*)<", sys.stdin.read())
+x = sys.stdin.read()
+m = re.search(r"name=\"GENERAL_DATA\">([^<]*)<", x)
 t = urllib.parse.unquote(m.group(1)) if m else ""
-print(",".join(a + "=" + b for a, b in re.findall(r"entryType\\\":(\d+),\\\"index\\\":(\d+)", t)) or "null")'
+u = re.findall(r"name=\"(UnityGraphicsQuality|Screenmanager%20Resolution%20\w+)\" value=\"(\d+)\"", x)
+print(",".join(a + "=" + b for a, b in re.findall(r"entryType\\\":(\d+),\\\"index\\\":(\d+)", t)) or
+      ",".join(urllib.parse.unquote(a) + "=" + b for a, b in sorted(u)) or "null")'
 }
 meta() {  # meta <文件>
   {
@@ -90,16 +94,30 @@ else
   VOL0=$(sed -n 's/^music_volume=//p' "$OUT/meta_before.txt")
   WAKE0=$(sed -n 's/^wakefulness=//p' "$OUT/meta_before.txt")
   a input keyevent KEYCODE_WAKEUP >/dev/null
-  # 冷启动进大世界 (与 selfsr_ab 相同的进门), 退出码 0 = 在游戏里
-  "$PF" onboard --package "$PKG" --serial "$SERIAL" --enter-only --no-guest --out "$OUT/onboard" > "$OUT/onboard.log" 2>&1
-  CODE=$?
-  if [ "$CODE" = 0 ]; then
-    sleep "${ENTER_WAIT:-10}"   # 进世界后等加载动画和公告淡出
-    python3 -I "$HERE/cruise.py" "$SERIAL" "$OUT" --frames "$FRAMES" --settle-ms "$SETTLE_MS" --walk-ms "${WALK_MS:-4000}" \
+  if [ "$PKG" = com.unity.megacity.metro ]; then
+    # onboard 认不出 Megacity 已进游戏 (selfsr/repro.sh), 用固定点击: 关 Unity 服务提示 → 单人模式 → 点屏幕开始
+    WH=$(a wm size | sed -n 's/^Physical size: *//p' | tail -1); W=${WH%x*}; H=${WH#*x}
+    [ "$W" -lt "$H" ] && { t=$W; W=$H; H=$t; }
+    tap() { a input tap "$(python3 -I -c "print(round($1 * $W))")" "$(python3 -I -c "print(round($2 * $H))")" >/dev/null; }
+    a cmd audio set-volume 3 0 >/dev/null
+    a am force-stop "$PKG" >/dev/null
+    a monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+    sleep 10; tap 0.5 0.558; sleep 3; tap 0.207 0.484; sleep 12; tap 0.505 0.884; sleep 6
+    python3 -I "$HERE/cruise_megacity.py" "$SERIAL" "$OUT" --frames "$FRAMES" --settle-ms "$SETTLE_MS" \
       --timeout-s "$TIMEOUT_S" --seed "${SEED:-0}" > "$OUT/capture.json" 2> "$OUT/capture.log"
     CODE=$?
   else
-    echo "{\"ok\": false, \"error\": \"onboard exit $CODE\"}" > "$OUT/capture.json"
+    # 冷启动进大世界 (与 selfsr_ab 相同的进门), 退出码 0 = 在游戏里
+    "$PF" onboard --package "$PKG" --serial "$SERIAL" --enter-only --no-guest --out "$OUT/onboard" > "$OUT/onboard.log" 2>&1
+    CODE=$?
+    if [ "$CODE" = 0 ]; then
+      sleep "${ENTER_WAIT:-10}"   # 进世界后等加载动画和公告淡出
+      python3 -I "$HERE/cruise.py" "$SERIAL" "$OUT" --frames "$FRAMES" --settle-ms "$SETTLE_MS" --walk-ms "${WALK_MS:-4000}" \
+        --timeout-s "$TIMEOUT_S" --seed "${SEED:-0}" > "$OUT/capture.json" 2> "$OUT/capture.log"
+      CODE=$?
+    else
+      echo "{\"ok\": false, \"error\": \"onboard exit $CODE\"}" > "$OUT/capture.json"
+    fi
   fi
   a am force-stop "$PKG" >/dev/null
   [ -n "$VOL0" ] && a cmd audio set-volume 3 "$VOL0" >/dev/null
@@ -154,7 +172,7 @@ restore = {"ok": all(same.values()) and after.get("game_running") == "0"
            "note": "脚本不改设置; 前后快照逐项一致且游戏已停才 ok"}
 batch = {"schema": "hgamey/dataset-capture-batch@1", "method": "C", "capture_method": "screencap",
          "capturer": cap.get("capturer") or "phonefarm",
-         "node_id": os.environ.get("PF_NODE_ID"), "job_id": os.environ.get("PF_JOB_ID"),
+         "node_id": os.environ.get("PF_NODE_ID") or os.environ.get("NODE_ID"), "job_id": os.environ.get("PF_JOB_ID"),
          "experiment_commit": os.environ.get("PF_EXPERIMENT_COMMIT"), "research": os.environ.get("PF_JOB_RESEARCH"),
          "package": pkg, "version_name": before.get("version_name"), "version_code": before.get("version_code"),
          "screen": before.get("screen"), "override_size": before.get("override_size"), "density": before.get("density"),

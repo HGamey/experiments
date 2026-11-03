@@ -9,6 +9,8 @@
 --batch、--exclude、--labels 重复时与输入一一对应。每批帧号和段号各自从 0 起, 内部把段号加上偏移 (保持 % 5 不变) 变成
 全数据集唯一, 清单里仍记原批帧号和 batch_segment; 新批首帧不与上一批比冻结。
 --labels 是人看图写的场景标签, 写进清单 tags: 每行 <帧号或 a-b> <scene_type> <pose> <lighting> [inferred] (inferred: 光照没看到天空, 由时间线推断)。
+tags.motion 优先取采集 manifest 的 motion (来自输入记录), 没有这一列时有标签的帧是 static (停稳后截图)。HUD 排除框按 batch.json 的包名选, 没标过的游戏拒绝;
+--hr-size 必须等于批次记录的实际渲染尺寸 (记录为空时不查)。
 构造 (与 selfsr/baseline_quality.py --truth-only 同口径):
   HR = 原生截图 (屏幕分辨率) LANCZOS 缩到游戏送显尺寸 --hr-size;
   LR = HR 经 BOX 缩到 --lr-size (Game Mode 0.56 时游戏实际渲染尺寸); source.kind=hr_downsampled。
@@ -40,10 +42,14 @@ import sys
 import numpy as np
 from PIL import Image
 
-# HUD 排除区 (相对坐标 x0,y0,x1,y1), SPEC_SR_LOOP §4.1 原神实测框
-HUD_BOXES = {"top_bar": (0, 0, 1, 0.13), "minimap_quest": (0, 0, 0.17, 0.40), "team": (0.80, 0.13, 1, 0.50),
-             "skills": (0.60, 0.58, 1, 1), "joystick_chat": (0, 0.62, 0.25, 1), "hp_bar": (0.35, 0.85, 0.65, 1),
-             "bottom_bar": (0, 0.93, 1, 1)}
+# HUD 排除区 (相对坐标 x0,y0,x1,y1)。原神: SPEC_SR_LOOP §4.1 实测框; Megacity: 看探路和试采截图标的 (2026-11-03),
+# 设置按钮、油门滑块整条、按住时才出现的瞄准摇杆; 飞行时浮动的距离圈位置不固定, 框不住
+GI_HUD_BOXES = {"top_bar": (0, 0, 1, 0.13), "minimap_quest": (0, 0, 0.17, 0.40), "team": (0.80, 0.13, 1, 0.50),
+                "skills": (0.60, 0.58, 1, 1), "joystick_chat": (0, 0.62, 0.25, 1), "hp_bar": (0.35, 0.85, 0.65, 1),
+                "bottom_bar": (0, 0.93, 1, 1)}
+HUD_BOXES = {"com.miHoYo.Yuanshen": GI_HUD_BOXES,
+             "com.unity.megacity.metro": {"settings": (0, 0, 0.07, 0.13), "throttle": (0.88, 0.48, 1, 0.95),
+                                          "aim_stick": (0.11, 0.33, 0.29, 0.60)}}
 ALIGN_REGION = (0.20, 0.15, 0.80, 0.80)
 ALIGN_MAX_PX = 0.25
 DUP_THRESH = 1.0       # 与 phonefarm capture 冻结判定一致
@@ -103,12 +109,12 @@ def phase_shift(a, b):
     return float(dx), float(dy)
 
 
-def tiles(w, h, t):
+def tiles(w, h, t, boxes):
     """HR 上 t×t 网格 (从左上起, 不重叠), 返回 (x, y, hud 命中的排除区名列表)。"""
     out = []
     for y in range(0, h - t + 1, t):
         for x in range(0, w - t + 1, t):
-            hit = [n for n, (x0, y0, x1, y1) in HUD_BOXES.items()
+            hit = [n for n, (x0, y0, x1, y1) in boxes.items()
                    if x < x1 * w and x + t > x0 * w and y < y1 * h and y + t > y0 * h]
             out.append((x, y, hit))
     return out
@@ -128,7 +134,7 @@ def label(img, text):
     return img
 
 
-def previews(root, items, a, n_sheet=24, n_crop=4, crop=(240, 160), zoom=2):
+def previews(root, items, a, hud_boxes, n_sheet=24, n_crop=4, crop=(240, 160), zoom=2):
     """展示用 (不进清单): contact_sheet.jpg (均匀取 n_sheet 张 HR 缩略图) 与 crop_NN.png (HR | LR 最近邻放大 | bicubic)。
     items: [(HR 路径, 标签)], LR 由 HR (无损 PNG) 按同一 BOX 核重算。裁剪框取该帧场景块里梯度能量最高的块中心。"""
     pdir = os.path.join(root, "preview")
@@ -152,7 +158,7 @@ def previews(root, items, a, n_sheet=24, n_crop=4, crop=(240, 160), zoom=2):
         lr = hr.resize(a.lr_size, Image.BOX)
         g = np.asarray(hr.convert("L"), dtype=np.float64)
         e = np.abs(np.diff(g, axis=0))[:, :-1] + np.abs(np.diff(g, axis=1))[:-1, :]
-        best = max(((x, y) for x, y, hit in tiles(*a.hr_size, a.tile) if not hit),
+        best = max(((x, y) for x, y, hit in tiles(*a.hr_size, a.tile, hud_boxes) if not hit),
                    key=lambda p: e[p[1]:p[1] + a.tile, p[0]:p[0] + a.tile].mean(), default=(0, 0))
         x0 = max(0, min(a.hr_size[0] - cw, best[0] + a.tile // 2 - cw // 2))
         y0 = max(0, min(a.hr_size[1] - ch, best[1] + a.tile // 2 - ch // 2))
@@ -237,6 +243,13 @@ def main():
         seg_base += (max(r["batch_segment"] for r in batch_rows) // VAL_MOD + 1) * VAL_MOD
     meta_of = {b["id"]: b["meta"] for b in batches}
     (hw, hh), (lw, lh), t = a.hr_size, a.lr_size, a.tile
+    packages = {b["meta"]["package"] or "com.miHoYo.Yuanshen" for b in batches}   # 老批次可能没有 batch.json
+    if len(packages) != 1 or not packages <= set(HUD_BOXES):
+        sys.exit(f"一个版本只放一款有 HUD 排除框的游戏, 现在是 {sorted(packages)}")
+    hud_boxes = HUD_BOXES[packages.pop()]
+    for b in batches:
+        if b["meta"]["render_size"] not in (None, f"{hw}x{hh}"):
+            sys.exit(f"--hr-size {hw}x{hh} 和 {b['id']} 的实际渲染尺寸 {b['meta']['render_size']} 不一致")
     root = os.path.join(a.out, f"{a.name}-v{a.version}")
     if os.path.exists(os.path.join(root, "qa_report.json")):
         sys.exit(f"{root} 已存在; 版本发布后不改, 换 --version")
@@ -291,7 +304,7 @@ def main():
                        else "val" if s % VAL_MOD == VAL_REM else "train")
 
     drops = {"integrity_segment": 0, "excluded": 0, "state": 0, "portrait": 0, "ready_only": 0, "frozen": 0, "flat": 0, "align": 0}
-    tile_grid = tiles(hw, hh, t)
+    tile_grid = tiles(hw, hh, t, hud_boxes)
     scene_tiles = [(x, y) for x, y, hit in tile_grid if not hit]
     counts = {"scene_tiles_available": 0, "scene_tiles_psnr_drop": 0, "scene_tiles_align_drop": 0,
               "scene_tiles_kept": 0, "hud_tiles": 0}
@@ -423,7 +436,8 @@ def main():
                            capture_method="screencap", ts_ms=r["ts_ms"], step=r["step"]),
             "derivation": derivation,
             "size": {"hr": [hw, hh], "lr": [lw, lh], "scale": derivation["scale"], "colorspace": "sRGB8", "pre_transform": None},
-            "tags": {"scene_type": None, "motion": None, "lighting": None, **labels.get((batch_id, r["i"]), {}), "hud": "standard",
+            "tags": {"scene_type": None, "motion": None, "lighting": None, **labels.get((batch_id, r["i"]), {}),
+                     **({"motion": r["motion"]} if r.get("motion") else {}), "hud": "standard",
                      "time_weather": None, "auto_luma_mean": f["luma_mean"]},
             "checks": {"files": files, "align_dx_dy": f["align"], "psnr_full_bicubic": f["psnr_full_bicubic"],
                        "tiles_kept": len(f["tiles"]), "tiles_dropped": len(f["tiles_dropped"]), "mask_coverage": None},
@@ -440,14 +454,14 @@ def main():
                         "train": "其余"},
                "thresholds": {"psnr_min": a.psnr_min, "align_max_px": ALIGN_MAX_PX, "breaker": a.breaker, "dup_thresh": DUP_THRESH,
                               "flat_std": FLAT_STD},
-               "tile": {"size": a.tile, "space": "hr", "lr_box": "x*lw/hw, y*lh/hh (非整数, 训练端按比例取)", "hud_boxes": HUD_BOXES},
+               "tile": {"size": a.tile, "space": "hr", "lr_box": "x*lw/hw, y*lh/hh (非整数, 训练端按比例取)", "hud_boxes": hud_boxes},
                "baseline_locked": baseline, "segments": {str(s): split_of[s] for s in segs},
                "segment_source": {str(s): sorted({(r["batch_id"], r["batch_segment"]) for r in rows if r["segment"] == s}) for s in segs},
                "frames": [{"path": e["path"], "split": e["split"], "segment": f["r"]["segment"],
                            "tiles": [[tt["x"], tt["y"]] for tt in f["tiles"]]} for e, f in zip(index, frames)]},
               open(os.path.join(root, "split.json"), "w"), ensure_ascii=False, indent=1)
     if not a.no_preview:
-        previews(root, shown, a)
+        previews(root, shown, a, hud_boxes)
     print(json.dumps({"dataset": root, "frames": len(frames), "splits": {s: (v["frames"], v["tiles"]) for s, v in split_n.items()},
                       "drop_ratio": qa["drop_ratio"], "baseline": baseline}, ensure_ascii=False))
     return 0
