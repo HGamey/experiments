@@ -297,8 +297,8 @@ def main():
         split_method = "separate_test_data_exact_duplicates_removed"
     else:
         train_desc, test_desc, split_method = assign_split(descriptors, args.test_fraction)
-    if not train_desc or not test_desc:
-        raise RuntimeError("empty train or test after exact de-duplication")
+    if len(train_desc) < 4 or len(test_desc) < 2:
+        raise RuntimeError(f"need at least 4 unique train and 2 unique test frames, got {len(train_desc)}/{len(test_desc)}")
     train_records = [decode_record(item) for item in train_desc]
     test_records = [decode_record(item) for item in test_desc]
     manifest = {
