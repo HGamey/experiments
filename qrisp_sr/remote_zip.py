@@ -5,6 +5,8 @@ rejects servers that silently ignore Range, so a metadata read cannot turn into
 an accidental multi-gigabyte download.
 """
 import re
+import time
+import urllib.error
 import urllib.request
 
 
@@ -19,6 +21,7 @@ class HTTPRangeFile:
         self.pos = 0
         self.bytes_read = 0
         self.requests = 0
+        self.attempts = 0
         self.closed = False
         status, headers, body = self._request(0, 0)
         if status != 206:
@@ -60,20 +63,33 @@ class HTTPRangeFile:
             raise ValueError(f"invalid range: {start}-{end}")
         if hasattr(self, "size") and end >= self.size:
             raise ValueError(f"range past end of {self.size}-byte object: {start}-{end}")
-        request = urllib.request.Request(
-            self.url,
-            headers={
-                "User-Agent": "QRISP-range-reader/1",
-                "Range": f"bytes={start}-{end}",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = response.read()
-            status = response.status
-            headers = response.headers
-        self.requests += 1
-        self.bytes_read += len(body)
-        return status, headers, body
+        last_error = None
+        for attempt in range(4):
+            request = urllib.request.Request(
+                self.url,
+                headers={
+                    "User-Agent": "QRISP-range-reader/1",
+                    "Range": f"bytes={start}-{end}",
+                },
+            )
+            self.attempts += 1
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    body = response.read()
+                    status = response.status
+                    headers = response.headers
+                self.requests += 1
+                self.bytes_read += len(body)
+                return status, headers, body
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {429, 500, 502, 503, 504}:
+                    raise
+                last_error = exc
+            except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                last_error = exc
+            if attempt < 3:
+                time.sleep(0.5 * (2**attempt))
+        raise RuntimeError(f"range GET failed after 4 attempts: {last_error}")
 
     def read_at(self, start, length):
         if length < 0 or length > self.max_read_bytes:

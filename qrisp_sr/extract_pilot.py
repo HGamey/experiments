@@ -138,6 +138,7 @@ def main():
         ),
         "contact_sheet": sheet_path.name,
         "http_requests": remote.requests,
+        "http_attempts": remote.attempts,
         "http_bytes_read": remote.bytes_read,
         "archive_bytes": remote.size,
         "archive_fraction_read": remote.bytes_read / remote.size,

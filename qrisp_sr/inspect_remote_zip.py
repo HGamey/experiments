@@ -66,6 +66,7 @@ def main():
         "central_directory_bytes": listing_path.stat().st_size,
         "central_directory_sha256": hashlib.sha256(listing_path.read_bytes()).hexdigest(),
         "http_requests": remote.requests,
+        "http_attempts": remote.attempts,
         "http_bytes_read": remote.bytes_read,
         "scene_payload_downloaded": False,
         "phone_access": False,
