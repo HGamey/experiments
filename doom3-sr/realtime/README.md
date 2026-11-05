@@ -23,14 +23,14 @@ bash build_engine.sh /path/to/v73 /path/to/android-ndk-r23c weights.npz /path/to
 python3 validate_gles.py weights.npz /path/to/output/shaders
 ```
 
-第二条需要 PyOpenGL、真实 EGL/GLES3 context；它将实际 shader 输出与 NumPy 三层卷积逐层比对，含上下方向、零填充、像素重排。宿主验证不能证明手机 fps。
+第二条需要 NumPy、Pillow、PyOpenGL、g++、GLES3 开发头文件和真实 EGL/GLES3 context；它将实际 shader 输出与 NumPy 三层卷积逐层比对，含上下方向、零填充、像素重排，并运行真实 C++ 后处理代码检查来回切换和 GL 状态恢复。宿主验证不能证明手机 fps。
 
 权重是 NHWC `w1[5,5,3,16], b1[16], w2[3,3,16,16], b2[16], w3[3,3,16,12], b3[12]`。`export_glsl.py` 生成源码和 SHA/形状清单。换权重只需重新生成头文件、复制到已打补丁引擎的 `doom3/neo/renderer/rb/` 并增量构建；不用再次执行 patch_engine.py。
 
-双三次为 a=-0.5、半像素中心、边缘截断后归一的浮点实现；没有 Pillow 的中间 8-bit 取整。真实训练权重到达后须核对其预处理并重跑数值验证。中间特征用 FP16，输入为屏幕 RGB8；不进行额外线性化或归一化。
+训练接口已核对 `kimi/qrisp-sr` 的 `51fcc85`：六数组的 HWIO 权重和 NHWC 激活、像素重排顺序都直接匹配。双三次与训练端 Pillow RGB8 对齐：a=-0.5、半像素中心、边缘截断归一、22-bit 系数、先横向后纵向各做 RGB8 取整和截断。验证直接调用 Pillow 生成参照；随机输入下模型关闭时输出字节完全相等。中间特征用 FP16，输入为屏幕 RGB8；不进行额外线性化或归一化。
 
 ## 验收边界
 
-先确认库加载、三模式和开关，再用同一存档/画面录屏，报告模型关/开与原生参照，以及稳定窗口的平均 fps、1% low。GPU 在手机上实际跑过才算装回。`pipeline-fixture` 包使用**未训练的合成权重**，仅用于提前验加载/GL 驱动/耗时，不能作画质交付。
+先确认库加载、三模式和开关，再用同一存档/画面录屏，报告模型关/开与原生参照，以及稳定窗口的平均 fps、1% low。GPU 在手机上实际跑过才算装回。`pipeline-fixture` 包使用**未训练的合成权重**，仅用于提前验加载/GL 驱动/耗时，不能作画质交付。首包固定对应 `65b00e2`，其中 bicubic 还是连续浮点实现；训练模型包会使用上述 Pillow 对齐版，收到真实权重后重新做数值验证并构建。
 
 代码按 GPL-3.0-or-later 提供。上游修改由 `patch_engine.py` 和 `small_sr.cpp` 完整描述，shader 可从随包 weights.npz 重建；包附上游许可证，不包含 Doom 商业游戏数据。

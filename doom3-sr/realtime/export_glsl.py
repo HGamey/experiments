@@ -83,7 +83,8 @@ def hidden(w, b, first):
 
 
 BICUBIC = '''
-// Catmull-Rom (a=-0.5), half-pixel centers, normalized clipped edge support.
+// Pillow RGB8 bicubic: a=-0.5, half-pixel centers, 22-bit coefficients,
+// horizontal RGB8 rounding/clipping followed by vertical RGB8 rounding/clipping.
 float cubic(float v) {
     float x = abs(v);
     if(x < 1.0) return ((1.5*x-2.5)*x)*x+1.0;
@@ -93,16 +94,30 @@ float cubic(float v) {
 vec3 bicubic(ivec2 hr) {
     vec2 p = (vec2(hr)+0.5)*0.5-0.5;
     ivec2 origin = ivec2(floor(p));
-    vec3 value = vec3(0.0);
-    float total = 0.0;
-    for(int y=-1; y<=2; ++y) for(int x=-1; x<=2; ++x) {
-        ivec2 q = origin+ivec2(x,y);
-        if(any(lessThan(q,ivec2(0))) || any(greaterThanEqual(q,uSize))) continue;
-        float a = cubic(p.x-float(q.x))*cubic(p.y-float(q.y));
-        value += texelFetch(uSource,q,0).rgb*a;
-        total += a;
+    vec4 wx=vec4(0.0), wy=vec4(0.0);
+    for(int i=0; i<4; ++i) {
+        int x=origin.x+i-1, y=origin.y+i-1;
+        if(x>=0 && x<uSize.x) wx[i]=cubic(p.x-float(x));
+        if(y>=0 && y<uSize.y) wy[i]=cubic(p.y-float(y));
     }
-    return clamp(value/total, 0.0, 1.0);
+    wx /= dot(wx,vec4(1.0));
+    wy /= dot(wy,vec4(1.0));
+    ivec4 cx=ivec4(sign(wx)*floor(abs(wx)*4194304.0+0.5));
+    ivec4 cy=ivec4(sign(wy)*floor(abs(wy)*4194304.0+0.5));
+    ivec3 total=ivec3(2097152);
+    for(int y=0; y<4; ++y) {
+        int sy=origin.y+y-1;
+        if(sy<0 || sy>=uSize.y) continue;
+        ivec3 row=ivec3(2097152);
+        for(int x=0; x<4; ++x) {
+            int sx=origin.x+x-1;
+            if(sx<0 || sx>=uSize.x) continue;
+            ivec3 rgb8=ivec3(floor(texelFetch(uSource,ivec2(sx,sy),0).rgb*255.0+0.5));
+            row += rgb8*cx[x];
+        }
+        total += clamp(row >> 22,ivec3(0),ivec3(255))*cy[y];
+    }
+    return vec3(clamp(total >> 22,ivec3(0),ivec3(255)))/255.0;
 }
 '''
 
@@ -149,7 +164,7 @@ def export(weights, destination):
     (destination/'small_sr_shaders.h').write_text(header)
     (destination/'model.json').write_text(json.dumps({'sha256':digest, 'parameters':int(count),
         'shapes':shapes, 'layout':'NHWC', 'scale':2, 'features':'RGBA16F',
-        'bicubic':'Catmull-Rom a=-0.5, half-pixel, clipped normalized support; continuous float'}, indent=2)+'\n')
+        'bicubic':'Pillow RGB8: a=-0.5, half-pixel, 22-bit coefficients, separable rounding/clipping'}, indent=2)+'\n')
 
 
 if __name__ == '__main__':

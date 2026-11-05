@@ -77,26 +77,13 @@ def conv(x,w,b):
 
 
 def bicubic(x):
-    def cubic(t):
-        t=abs(t)
-        return ((1.5*t-2.5)*t)*t+1 if t<1 else (((-.5*t+2.5)*t-4)*t+2 if t<2 else 0)
-    h,w,c=x.shape
-    out=np.empty((h*2,w*2,c),np.float32)
-    for y in range(h*2):
-        for xx in range(w*2):
-            px,py=(xx+.5)/2-.5,(y+.5)/2-.5
-            s=np.zeros(c,np.float64);total=0
-            for sy in range(int(np.floor(py))-1,int(np.floor(py))+3):
-                for sx in range(int(np.floor(px))-1,int(np.floor(px))+3):
-                    if 0<=sx<w and 0<=sy<h:
-                        a=cubic(px-sx)*cubic(py-sy)
-                        s+=x[sy,sx]*a;total+=a
-            out[y,xx]=np.clip(s/total,0,1)
-    return out
+    from PIL import Image
+    h,w,_=x.shape
+    rgb=np.rint(x*255).astype(np.uint8)
+    return np.asarray(Image.fromarray(rgb).resize((w*2,h*2),Image.Resampling.BICUBIC)).astype(np.float32)/255
 
 
-def main(weights,shaders):
-    w,h=31,19
+def main(weights,shaders,w=31,h=19):
     ctx=context(w*2,h*2)
     report={'renderer':GL.glGetString(GL.GL_RENDERER).decode(),
             'version':GL.glGetString(GL.GL_VERSION).decode(),'size':[w,h]}
@@ -146,7 +133,7 @@ def main(weights,shaders):
         value=read(w*2,h*2)[:,:,:3]
         error=np.abs(value-ref)
         report['model' if model else 'bicubic']={'max_abs':float(error.max()),'mean_abs':float(error.mean())}
-        assert error.max()<.003,report
+        assert error.max() < (.003 if model else .000001),report
     # Exercise the actual C++ copy/pass/state-restore code against the default
     # framebuffer too, not only standalone shaders. Only Doom's host API is stubbed.
     import host_adapter
@@ -176,4 +163,5 @@ def main(weights,shaders):
 if __name__=='__main__':
     p=argparse.ArgumentParser()
     p.add_argument('weights',type=Path);p.add_argument('shaders',type=Path)
-    a=p.parse_args();main(a.weights,a.shaders)
+    p.add_argument('--width',type=int,default=31);p.add_argument('--height',type=int,default=19)
+    a=p.parse_args();main(a.weights,a.shaders,a.width,a.height)
