@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no">
+<title>gs3d blank</title>
+<style>body{margin:0;background:#000;overflow:hidden;height:100vh}canvas{width:100vw;height:100vh;display:block}</style></head>
+<body><canvas id="canvas"></canvas>
+<script src="bench.js"></script>
+<script>
+// 黑底页: 冷却时静置用；带 bench=1 时作为空白基线 (同样每帧 clear 一块全屏 WebGL2 画布，统计 rAF 与功耗)。
+(function () {
+  const q = new URLSearchParams(location.search);
+  const c = document.getElementById("canvas");
+  const dpr = q.get("dpr") === "native" ? devicePixelRatio : Number(q.get("dpr") || 1);
+  c.width = Math.round(innerWidth * dpr); c.height = Math.round(innerHeight * dpr);
+  const gl = c.getContext("webgl2");
+  if (!q.get("bench")) return;
+  window.__gsb.loadDone = true;
+  const f = (now) => { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); window.__gsb.frame(now, 1, 1); requestAnimationFrame(f); };
+  requestAnimationFrame(f);
+})();
+</script></body></html>

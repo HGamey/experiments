@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gs3d caps</title></head>
+<body style="background:#000;color:#fff;font:16px sans-serif"><pre id="out">probing…</pre>
+<script>
+// 浏览器能力探针：WebGL2 渲染器与上限、WebGPU 适配器。结果 POST 给宿主 /caps。
+(async function () {
+  const r = { ua: navigator.userAgent, dpr: devicePixelRatio, css: [innerWidth, innerHeight],
+              screen: [screen.width, screen.height], hw_threads: navigator.hardwareConcurrency,
+              device_memory: navigator.deviceMemory || null };
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl2");
+    if (gl) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      r.webgl2 = { ok: true, version: gl.getParameter(gl.VERSION), glsl: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+                   renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+                   vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+                   max_texture: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+                   float_rt: !!gl.getExtension("EXT_color_buffer_float") };
+    } else r.webgl2 = { ok: false };
+  } catch (e) { r.webgl2 = { ok: false, error: String(e) }; }
+  try {
+    if (!("gpu" in navigator)) r.webgpu = { ok: false, reason: "navigator.gpu 不存在" };
+    else {
+      const a = await navigator.gpu.requestAdapter();
+      if (!a) r.webgpu = { ok: false, reason: "requestAdapter 返回 null" };
+      else {
+        let info = a.info || null;
+        if (!info && a.requestAdapterInfo) { try { info = await a.requestAdapterInfo(); } catch (e) {} }
+        const d = await a.requestDevice();
+        r.webgpu = { ok: !!d, info: info ? { vendor: info.vendor, architecture: info.architecture, description: info.description } : null,
+                     max_buffer: a.limits.maxBufferSize, max_storage: a.limits.maxStorageBufferBindingSize,
+                     features: Array.from(a.features || []) };
+      }
+    }
+  } catch (e) { r.webgpu = { ok: false, error: String(e) }; }
+  document.getElementById("out").textContent = JSON.stringify(r, null, 1);
+  fetch("/caps", { method: "POST", body: JSON.stringify(r) }).catch(() => {});
+})();
+</script></body></html>
