@@ -90,7 +90,11 @@ def fetch(url, dest, log, want=None, tries=4):
         tmp = dest + ".part"
         try:
             with urllib.request.urlopen(url, timeout=300) as r, open(tmp, "wb") as f:
+                want_len = int(r.headers.get("content-length") or -1)
                 shutil.copyfileobj(r, f, 1 << 20)
+            got = os.path.getsize(tmp)
+            if want_len >= 0 and got != want_len:  # 连接提前断开时 urllib 不报错，只是读到的字节少
+                raise RuntimeError(f"只收到 {got}/{want_len} B")
             os.replace(tmp, dest)
             log(f"下载 {url} → {os.path.getsize(dest)} B, {time.time() - t:.1f}s")
         except Exception as ex:
@@ -160,6 +164,9 @@ def prepare_www(www, scenes, mirror, log):
                     fo.write(fi.read(n * ROW))
             info[sc] = {"file": f"scenes/{base}_{n}.splat", "gaussians": n, "source_total": total}
         else:
+            # 整行对齐 (查看器的 Float32Array 视图要求字节数是 4 的倍数)
+            if os.path.getsize(full) != total * ROW:
+                raise RuntimeError(f"{full} 不是整行: {os.path.getsize(full)} B")
             info[sc] = {"file": f"scenes/{base}.splat", "gaussians": total, "source_total": total}
     return info
 
