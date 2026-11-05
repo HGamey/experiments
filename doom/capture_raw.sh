@@ -81,7 +81,8 @@ sh_ "su -c 'ls -la /data/media/0/diii4a/doom3/base/demo00.pk4; sha256sum /data/m
 
 # 4) 启动 (冻结命令, fs_savepath 指自己的 state; com_showFPS 开着便于人看; logfile 2 留控制台日志)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
-CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set logfile 2 +set developer 1 +set com_showFPS 1 +set r_multiSamples ${MSAA:-0} +set r_useShadowMapping 1 +set harm_r_globalIllumination 1 +set harm_r_renderToolsMultithread 1 +set harm_r_autoAspectRatio 1 +set r_screenFraction 100 +set r_maxFps 60 +set g_skill 1 +set com_allowConsole 1 +map game/demo_mars_city1"
+CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set developer 1 +set com_showFPS 1 +set r_multiSamples ${MSAA:-0} +set r_useShadowMapping 1 +set harm_r_globalIllumination 1 +set harm_r_renderToolsMultithread 1 +set harm_r_autoAspectRatio 1 +set r_screenFraction 100 +set r_maxFps 60 +set g_skill 1 +set com_allowConsole 1 +map game/demo_mars_city1"
+# 实测(红魔 2026-11-06): +set logfile 2 会让引擎进程静默退出(诊断16 B_LOG), 全组其余 flag 无此问题; 故不带 logfile, 进图证据改用截帧统计+SurfaceFlinger。
 # 放回准备: 可选本地引擎库 + 启动器开关 (pilot 4802feb59a1a 验证链: pref sed → cache/lib 复制加载)
 LIB_SHA="${LIB_SHA:-}"
 if [ -n "$LIB_SHA" ] && [ -f "$CACHE/blobs/$LIB_SHA" ] && sh_ "su -c true" >/dev/null 2>&1; then
