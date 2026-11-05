@@ -41,9 +41,13 @@ APK="$CACHE/blobs/$APK_SHA"; PK4="$CACHE/blobs/$PK4_SHA"
 [ -f "$PK4" ] || { echo "FATAL: demo00.pk4 blob missing"; exit 3; }
 ls -la "$APK" "$PK4"
 
-# 2) 清后台 + 安装
+# 2) 清后台 + 安装 (adb/hdc 要求文件名以 .apk 结尾, 缓存 blob 需先复制)
 sh_ "am kill-all" >/dev/null || true
-inst_ "$APK"
+APKF="$OUT/idtech4amm-v73-arm64.apk"
+cp "$APK" "$APKF"
+INST_OUT=$(inst_ "$APKF")
+echo "INSTALL: $INST_OUT"
+echo "$INST_OUT" | grep -qi 'success' || { echo "FATAL: install failed"; exit 5; }
 
 # 3) 目标目录; uid 用 dumpsys 解析 (pilot 10386 是那台机的值, 每机不同)
 BASE=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3
@@ -86,6 +90,7 @@ sh_ "am start -W -S -n $PKG/com.n0n3m4.q3e.Q3EMain --es game doom3 --es command 
 sleep 25
 P=$(sh_ "pidof $PKG || true" | tr -d '\r')
 echo "GAME_PID=$P"
+[ -n "$P" ] || { echo "FATAL: game process not running after launch"; exit 6; }
 sh_ "dumpsys window | grep -i mCurrentFocus || true"
 
 # 5) 确定性脚本化走动 + 原生截帧 (不逐帧操控: 固定节奏的划动序列)
