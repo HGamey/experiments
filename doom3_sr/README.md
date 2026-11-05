@@ -66,10 +66,11 @@ Prepare a JSON manifest with an `items` list. Each item contains relative `nativ
 python3 doom3_sr/compare_device.py \
   --manifest /path/to/device-comparison.json --out /path/to/device-results \
   --fps-native 60.0 --fps-bicubic 45.0 --fps-sr 40.0 \
+  --fps-low1-native 55.0 --fps-low1-bicubic 35.0 --fps-low1-sr 30.0 \
   --full-thumbnails
 ```
 
-FPS values above are syntax examples only, not measurements. Omit all FPS arguments until real matched measurements are available. `summary.json` preserves which values were supplied and never substitutes macmini timing.
+`--fps-*` are measured averages and `--fps-low1-*` are measured 1% lows; each low requires its corresponding mean. Values above are syntax examples only, not measurements. Omit all FPS arguments until real matched measurements are available. `summary.json` preserves which values were supplied and never substitutes macmini timing.
 
 ## Validation and metric boundary
 

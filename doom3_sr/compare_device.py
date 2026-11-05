@@ -67,9 +67,11 @@ def _delta(sr, bicubic):
     return {key: sr[key] - bicubic[key] for key in METRIC_KEYS}
 
 
-def _fps_summary(native, bicubic, sr):
+def _fps_summary(native, bicubic, sr, low1_native=None, low1_bicubic=None, low1_sr=None):
     result = {}
-    for name, value in (("native", native), ("bicubic", bicubic), ("sr", sr)):
+    means = {"native": native, "bicubic": bicubic, "sr": sr}
+    lows = {"native": low1_native, "bicubic": low1_bicubic, "sr": low1_sr}
+    for name, value in means.items():
         if value is None:
             continue
         value = float(value)
@@ -79,6 +81,21 @@ def _fps_summary(native, bicubic, sr):
     if bicubic is not None and sr is not None:
         result["sr_minus_bicubic"] = result["sr"] - result["bicubic"]
         result["sr_over_bicubic"] = result["sr"] / result["bicubic"]
+    low1_result = {}
+    for name, value in lows.items():
+        if value is None:
+            continue
+        if means[name] is None:
+            raise ValueError(f"FPS low1 {name} requires the corresponding mean")
+        value = float(value)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"FPS low1 {name} must be finite and positive")
+        low1_result[name] = value
+    if low1_bicubic is not None and low1_sr is not None:
+        low1_result["sr_minus_bicubic"] = low1_result["sr"] - low1_result["bicubic"]
+        low1_result["sr_over_bicubic"] = low1_result["sr"] / low1_result["bicubic"]
+    if low1_result:
+        result["low1"] = low1_result
     return result
 
 
@@ -109,7 +126,8 @@ def _write_sheet(path, rows, labels):
 
 
 def compare(manifest, out, fps_native=None, fps_bicubic=None, fps_sr=None,
-            full_thumbnails=False):
+            full_thumbnails=False, fps_low1_native=None, fps_low1_bicubic=None,
+            fps_low1_sr=None):
     """Validate a manifest, write comparison artifacts, and return the summary."""
     manifest = Path(manifest)
     document = json.loads(manifest.read_text(encoding="utf-8"))
@@ -117,7 +135,8 @@ def compare(manifest, out, fps_native=None, fps_bicubic=None, fps_sr=None,
         raise ValueError("manifest must be an object with an items list")
     if not document["items"]:
         raise ValueError("manifest must contain at least one item")
-    fps = _fps_summary(fps_native, fps_bicubic, fps_sr)
+    fps = _fps_summary(fps_native, fps_bicubic, fps_sr, fps_low1_native,
+                       fps_low1_bicubic, fps_low1_sr)
     root = manifest.parent.resolve()
     items = []
     crop_rows, thumbnail_rows, labels = [], [], []
@@ -183,12 +202,16 @@ def main(argv=None):
     parser.add_argument("--fps-native", type=float)
     parser.add_argument("--fps-bicubic", type=float)
     parser.add_argument("--fps-sr", type=float)
+    parser.add_argument("--fps-low1-native", type=float, help="measured native 1%% low FPS")
+    parser.add_argument("--fps-low1-bicubic", type=float, help="measured bicubic 1%% low FPS")
+    parser.add_argument("--fps-low1-sr", type=float, help="measured SR 1%% low FPS")
     parser.add_argument("--full-thumbnails", action="store_true",
                         help="also write a downscaled full-frame contact sheet")
     args = parser.parse_args(argv)
     try:
         summary = compare(args.manifest, args.out, args.fps_native, args.fps_bicubic,
-                          args.fps_sr, args.full_thumbnails)
+                          args.fps_sr, args.full_thumbnails, args.fps_low1_native,
+                          args.fps_low1_bicubic, args.fps_low1_sr)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     for name in ["summary.json", *summary["sheets"].values()]:

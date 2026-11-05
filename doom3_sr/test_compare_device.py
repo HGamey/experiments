@@ -68,7 +68,8 @@ class CompareDeviceTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--manifest", str(self.manifest),
              "--out", str(out), "--fps-native", "60", "--fps-bicubic", "40",
-             "--fps-sr", "50", "--full-thumbnails"],
+             "--fps-sr", "50", "--fps-low1-native", "55", "--fps-low1-bicubic", "25",
+             "--fps-low1-sr", "30", "--full-thumbnails"],
             cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -100,6 +101,10 @@ class CompareDeviceTests(unittest.TestCase):
         self.assertEqual(summary["fps"], {
             "native": 60.0, "bicubic": 40.0, "sr": 50.0,
             "sr_minus_bicubic": 10.0, "sr_over_bicubic": 1.25,
+            "low1": {
+                "native": 55.0, "bicubic": 25.0, "sr": 30.0,
+                "sr_minus_bicubic": 5.0, "sr_over_bicubic": 1.2,
+            },
         })
 
     def test_custom_and_default_centered_crops_and_optional_native_fps(self):
@@ -122,6 +127,12 @@ class CompareDeviceTests(unittest.TestCase):
         self.assertEqual(default["fps"], {})
         with Image.open(self.root / "default" / "contact_sheet.png") as sheet:
             self.assertEqual(sheet.size, (768, 300))
+
+    def test_rejects_low1_without_matching_mean(self):
+        item = self.add_item("frame", (100, 90, 105))
+        self.write_manifest([item])
+        with self.assertRaisesRegex(ValueError, "requires the corresponding mean"):
+            compare(self.manifest, self.root / "bad_low1", fps_low1_sr=30)
 
     def test_rejects_crop_errors(self):
         item = self.add_item("frame", (100, 90, 105), size=(32, 24))
