@@ -120,6 +120,31 @@ def deduplicate(descriptors):
     return result
 
 
+def filter_near_duplicates(descriptors, min_mad):
+    """Keep a frame only when its luma thumbnail differs from the last kept frame."""
+    kept, rejected = [], []
+    previous = None
+    for item in descriptors:
+        with Image.open(item["path"]) as source:
+            image = ImageOps.exif_transpose(source).convert("L").resize((64, 64), Image.Resampling.BILINEAR)
+            thumbnail = np.asarray(image, dtype=np.float32)
+        mad = None if previous is None else float(np.mean(np.abs(thumbnail - previous)))
+        if mad is not None and mad < min_mad:
+            rejected.append({"relative_path": item["relative_path"], "mad_from_last_kept_8bit": mad})
+            continue
+        kept.append(item | {"mad_from_last_kept_8bit": mad})
+        previous = thumbnail
+    report = {
+        "metric": "mean absolute luma difference of 64x64 thumbnails versus last kept frame, 8-bit levels",
+        "threshold_8bit": min_mad,
+        "input_frames": len(descriptors),
+        "kept_frames": len(kept),
+        "rejected_frames": len(rejected),
+        "rejected": rejected,
+    }
+    return kept, report
+
+
 def assign_split(descriptors, test_fraction):
     explicit_test = [item for item in descriptors if item["split"] == "test"]
     if explicit_test:
@@ -287,23 +312,32 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--test-fraction", type=float, default=0.1)
+    parser.add_argument("--min-frame-mad", type=float, default=0.5, help="near-duplicate luma threshold in 8-bit levels; 0 disables")
     parser.add_argument("--scratch-lr", type=float, default=0.001)
     parser.add_argument("--finetune-lr", type=float, default=0.0002)
     args = parser.parse_args()
-    if args.steps < 1 or args.patch < 4 or args.batch_size < 1:
-        raise ValueError("steps/batch size must be positive and patch>=4")
+    if args.steps < 1 or args.patch < 4 or args.batch_size < 1 or args.min_frame_mad < 0:
+        raise ValueError("steps/batch size must be positive, patch>=4, and min-frame-mad>=0")
     if bool(args.pretrained) != bool(args.pretrained_structure):
         raise ValueError("--pretrained and --pretrained-structure are required together")
     started = time.perf_counter()
     out = Path(os.environ.get("PF_JOB_OUT", "out"))
     out.mkdir(parents=True, exist_ok=True)
 
-    descriptors = deduplicate(discover(args.data, "train" if args.test_data else None))
+    initial_descriptors = discover(args.data, "train" if args.test_data else None)
+    descriptors = deduplicate(initial_descriptors)
+    exact_duplicates_removed = len(initial_descriptors) - len(descriptors)
+    descriptors, data_filter_report = filter_near_duplicates(descriptors, args.min_frame_mad)
+    near_filter_reports = {"data": data_filter_report}
     if args.test_data:
         train_desc = descriptors
-        test_desc = deduplicate(discover(args.test_data, "test"))
+        initial_test = discover(args.test_data, "test")
+        test_desc = deduplicate(initial_test)
+        exact_duplicates_removed += len(initial_test) - len(test_desc)
         train_hashes = {item["hr_sha256"] for item in train_desc}
         test_desc = [item for item in test_desc if item["hr_sha256"] not in train_hashes]
+        test_desc, test_filter_report = filter_near_duplicates(test_desc, args.min_frame_mad)
+        near_filter_reports["test_data"] = test_filter_report
         split_method = "separate_test_data_exact_duplicates_removed"
     else:
         train_desc, test_desc, split_method = assign_split(descriptors, args.test_fraction)
@@ -318,9 +352,10 @@ def main():
         "split_method": split_method,
         "train_pairs": len(train_records),
         "test_pairs": len(test_records),
-        "exact_duplicate_files_removed": len(discover(args.data)) - len(descriptors),
+        "exact_duplicate_files_removed": exact_duplicates_removed,
+        "near_duplicate_filter": near_filter_reports,
         "sources": [
-            {key: item[key] for key in ("relative_path", "group", "scene", "frame", "device", "split", "hr_sha256", "hr_bytes", "width", "height")}
+            {key: item.get(key) for key in ("relative_path", "group", "scene", "frame", "device", "split", "hr_sha256", "hr_bytes", "width", "height", "mad_from_last_kept_8bit")}
             for item in train_records + test_records
         ],
     }

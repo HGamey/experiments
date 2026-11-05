@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from doom3_sr.train_doom import assign_split, base_patch, decode_record, deduplicate, discover
+from doom3_sr.train_doom import assign_split, base_patch, decode_record, deduplicate, discover, filter_near_duplicates
 
 
 class DoomTrainingPreparationTests(unittest.TestCase):
@@ -26,6 +26,26 @@ class DoomTrainingPreparationTests(unittest.TestCase):
                     np.testing.assert_array_equal(actual, expected)
                     checked += 1
             self.assertGreater(checked, 20)
+
+    def test_near_duplicate_filter_compares_with_last_kept(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arrays = []
+            for value in (0, 1):
+                base = np.full((32, 40, 3), value, dtype=np.uint8)
+                changed = base.copy()
+                changed[0, 0] = 255
+                arrays.extend((base, changed))
+            descriptors = []
+            for index, array in enumerate(arrays):
+                path = root / f"{index}.png"
+                Image.fromarray(array).save(path)
+                descriptors.append({"path": path, "relative_path": path.name})
+            kept, report = filter_near_duplicates(descriptors, 0.5)
+            self.assertEqual([item["relative_path"] for item in kept], ["0.png", "2.png"])
+            self.assertEqual(report["rejected_frames"], 2)
+            self.assertEqual(report["kept_frames"], 2)
+            self.assertAlmostEqual(kept[1]["mad_from_last_kept_8bit"], 1.0)
 
     def test_discovery_dedup_and_group_split(self):
         with tempfile.TemporaryDirectory() as temporary:
