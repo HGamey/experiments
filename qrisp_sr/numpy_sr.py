@@ -112,6 +112,22 @@ class SmallSR:
     def save(self, path):
         np.savez(path, **self.params)
 
+    @classmethod
+    def load(cls, weights_path, structure):
+        model = cls(
+            channels=structure["channels"],
+            residual=structure["bicubic_residual"],
+        )
+        with np.load(weights_path, allow_pickle=False) as weights:
+            expected = set(model.params)
+            if set(weights.files) != expected:
+                raise ValueError(f"weight keys {weights.files} do not match {sorted(expected)}")
+            for key in expected:
+                if weights[key].shape != model.params[key].shape:
+                    raise ValueError(f"shape mismatch for {key}: {weights[key].shape}")
+                model.params[key] = weights[key].astype(np.float32)
+        return model
+
     def structure(self):
         c = self.channels
         layers = [

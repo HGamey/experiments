@@ -44,6 +44,16 @@ python3 qrisp_sr/train_qrisp.py \
 
 Training uses RGB values in [0,1], 32×32 random LR patches, batch 8, L1 loss, Adam (learning rate 0.001), and seed 20261106. All variants use identical steps and data.
 
+## Inference
+
+```sh
+python3 qrisp_sr/infer_qrisp.py \
+  --model base.npz --structure base-structure.json \
+  --input lr.png --output prediction.png
+```
+
+The loader validates every weight key and shape, performs bicubic 2× plus the optional learned residual, and writes a 2× RGB PNG. The reported time is NumPy CPU time, not a phone measurement.
+
 ## Outputs and metrics
 
 - `base.npz`, `no_residual.npz`, `half_channels.npz`: trained weights.
