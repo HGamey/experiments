@@ -26,6 +26,7 @@ echo "OUT=$OUT SERIAL=$SERIAL ARMS=$ARMS"
 sh_ "[ -f $BASE/base/demo00.pk4 ]" || { echo "FATAL: game data not deployed ($BASE)"; exit 3; }
 sh_ "su -c true" >/dev/null 2>&1 || { echo "FATAL: root needed for pref edit"; exit 3; }
 
+CACHE="${CACHE:-/Users/mac/hgamey/phonefarm/_games/cache}"
 # 1) 取包 (宿主 git; 缓存 blob 优先)
 SO_SRC="$CACHE/blobs/$SO_SHA"
 if [ ! -f "$SO_SRC" ]; then

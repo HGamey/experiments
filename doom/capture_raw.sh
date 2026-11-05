@@ -118,9 +118,9 @@ done
 N=$(ls "$OUT/frames" | grep -c png || true)
 echo "FRAMES_KEPT=$N"
 
-# 6) 依据: 引擎控制台日志尾部 + 进程存活
-sh_ "tail -n 40 $STATE/base/qconsole.log" > "$OUT/qconsole_tail.txt" 2>/dev/null || true
-sh_ "head -n 60 $STATE/base/qconsole.log" > "$OUT/qconsole_head.txt" 2>/dev/null || true
+# 6) 依据: 引擎控制台日志尾部 + 进程存活 (Android 16 FUSE 下 shell 读不了 Android/data, 必须 su)
+sh_ "su -c 'tail -n 40 $STATE/base/qconsole.log'" > "$OUT/qconsole_tail.txt" 2>/dev/null || sh_ "tail -n 40 $STATE/base/qconsole.log" > "$OUT/qconsole_tail.txt" 2>/dev/null || true
+sh_ "su -c 'head -n 60 $STATE/base/qconsole.log'" > "$OUT/qconsole_head.txt" 2>/dev/null || true
 ALIVE=$(sh_ "pidof $PKG || true" | tr -d '\r')
 MEM=$(sh_ "dumpsys meminfo $PKG | grep -m1 TOTAL" || true)
 echo "ALIVE_AFTER=$ALIVE"; echo "MEM=$MEM"
@@ -129,7 +129,9 @@ GLES=$(grep -m1 -iE 'OpenGL|GLES' "$OUT/qconsole_head.txt" "$OUT/qconsole_tail.t
 LIBMAP=$(sh_ "su -c 'grep -m1 libdoom3 /proc/$ALIVE/maps' 2>/dev/null" || true)
 echo "GLES_LINE=$GLES"
 echo "LIBMAP_LINE=$LIBMAP"
-# 引擎诊断: qconsole 不在时抓 logcat 尾部与 savepath 递归列表
+MAPLINE=$(grep -m2 -iE 'Mars City|demo_mars|map:' "$OUT/qconsole_head.txt" "$OUT/qconsole_tail.txt" 2>/dev/null | head -2 || true)
+echo "MAP_LINE=$MAPLINE"
+# 引擎诊断: qconsole 拿不到时抓 logcat 尾部与 savepath 递归列表
 [ -s "$OUT/qconsole_tail.txt" ] || {
   sh_ "logcat -d -t 300 | grep -iE 'idTech|Q3E|doom|glimp' | tail -n 40" > "$OUT/logcat_doom.txt" 2>/dev/null || true
   sh_ "ls -laR $STATE 2>/dev/null | head -n 30" > "$OUT/state_ls.txt" 2>/dev/null || true
