@@ -19,8 +19,9 @@ All variants use NHWC RGB input, `Conv2D same → ReLU → Conv2D same → ReLU 
 | `base` | 16 | yes | 5,276 | 5,232 |
 | `no_residual` | 16 | no | 5,276 | 5,232 |
 | `half_channels` | 8 | yes | 2,068 | 2,040 |
+| `double_channels` | 32 | yes | 15,148 | 15,072 |
 
-At 960×540 input, the base convolutions execute 2,712,268,800 MACs per frame. The residual variant adds a Pillow bicubic 2× image to the network output. Weights are float32 NPZ files with per-layer JSON descriptions.
+At 960×540 input, the base convolutions execute 2,712,268,800 MACs per frame; the doubled-channel variant executes 7,813,324,800. The residual variant adds a Pillow bicubic 2× image to the network output. Weights are float32 NPZ files with per-layer JSON descriptions.
 
 ## Run
 
@@ -30,7 +31,7 @@ On macmini-3 through the platform (replace the commit with the intended immutabl
 ./bin/pf-node --experiment <COMMIT> \
   --research 253b68b9-f645-49af-9d6c-7288cd307c66 \
   --direction qrisp-single-frame-small-sr \
-  --label 'QRISP 3场景训练 + SeaPort测试 + 2项消融' \
+  --label 'QRISP 3场景训练 + SeaPort测试 + 3项消融' \
   --device-access none --max-runtime-seconds 21600 --detach \
   experiment qrisp_sr/train_qrisp.py --steps 10000
 ```
@@ -56,7 +57,7 @@ The loader validates every weight key and shape, performs bicubic 2× plus the o
 
 ## Outputs and metrics
 
-- `base.npz`, `no_residual.npz`, `half_channels.npz`: trained weights.
+- `base.npz`, `no_residual.npz`, `half_channels.npz`, `double_channels.npz`: trained weights; deliver only as login-protected platform artifacts.
 - `*-structure.json`: operators, channels, parameter counts, MACs, file bytes, and training time.
 - `summary.json`: per-frame and mean PSNR/SSIM, bicubic deltas, and macmini CPU inference time.
 - `data-manifest.json`: source paths, SHA-256, scene split, transfer and memory totals; no raw archive.

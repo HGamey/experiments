@@ -29,6 +29,7 @@ VARIANTS = {
     "base": {"channels": 16, "residual": True},
     "no_residual": {"channels": 16, "residual": False},
     "half_channels": {"channels": 8, "residual": True},
+    "double_channels": {"channels": 32, "residual": True},
 }
 
 
@@ -253,7 +254,7 @@ def make_sheets(records, variant_models, out):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=2000)
-    parser.add_argument("--variants", default="base,no_residual,half_channels")
+    parser.add_argument("--variants", default="base,no_residual,half_channels,double_channels")
     parser.add_argument("--local-pilot")
     parser.add_argument("--train-pairs-per-scene", type=int, default=16)
     parser.add_argument("--test-pairs", type=int, default=6)
