@@ -27,6 +27,16 @@ python3 validate_gles.py weights.npz /path/to/output/shaders
 
 权重是 NHWC `w1[5,5,3,16], b1[16], w2[3,3,16,16], b2[16], w3[3,3,16,12], b3[12]`。`export_glsl.py` 生成源码和 SHA/形状清单。换权重只需重新生成头文件、复制到已打补丁引擎的 `doom3/neo/renderer/rb/` 并增量构建；不用再次执行 patch_engine.py。
 
+已有上面的引擎构建目录时，拿到 NPZ 后一条命令出新包：
+
+```sh
+python3 package_model.py selected.npz \
+  --engine /path/to/v73 --ndk /path/to/android-ndk-r23c \
+  --output /path/to/small-sr-doom-arm64.tar.gz
+```
+
+它依次导出 shader、运行真实 GLES/NumPy/Pillow 和 C++ 切换验证、更新引擎里的模型和后处理源码、增量编译、strip、打包。验证失败就停；没有跳过验证的开关。包内含 `.so`、NPZ、配置、shader、重建源码、许可证、安装说明、验证日志和文件哈希；旁边的同名 `.json` 还记录整个包的哈希。此命令不提交、不推送、不安装。已有占位权重时可加 `--purpose 'UNTRAINED: loading and driver test only'` 明确标注。
+
 训练接口已核对 `kimi/qrisp-sr` 的 `51fcc85`：六数组的 HWIO 权重和 NHWC 激活、像素重排顺序都直接匹配。双三次与训练端 Pillow RGB8 对齐：a=-0.5、半像素中心、边缘截断归一、22-bit 系数、先横向后纵向各做 RGB8 取整和截断。验证直接调用 Pillow 生成参照；随机输入下模型关闭时输出字节完全相等。中间特征用 FP16，输入为屏幕 RGB8；不进行额外线性化或归一化。
 
 ## 验收边界
