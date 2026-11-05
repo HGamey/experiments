@@ -12,6 +12,7 @@ import unittest
 import numpy as np
 
 from doom3_sr.export_glsl import ARRAYS, export
+from qrisp_sr.numpy_sr import SmallSR
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,70 @@ class ExportGLSLTests(unittest.TestCase):
         self.assertEqual(w1[index], source["w1"][4, 4, 2, 15])
         self.assertIn("(sub_y * 2 + sub_x) * 3 + rgb", inc)
         self.assertIn("No bicubic residual is implemented here", inc)
+
+    def test_scalar_glsl_semantics_match_smallsr_predict(self):
+        weights = synthetic_weights()
+        for name, values in weights.items():
+            signs = np.where(np.arange(values.size) % 2 == 0, 1.0, -1.0)
+            weights[name] = values * signs.astype(np.float32).reshape(values.shape)
+        np.savez(self.model, **weights)
+        inc_path, _ = export(self.model, self.structure, self.root / "semantic")
+        inc = inc_path.read_text(encoding="utf-8")
+        arrays = {npz_name: parse_array(inc, glsl_name)[1]
+                  for glsl_name, npz_name in ARRAYS}
+
+        def scalar_conv(x, weight, bias, kernel, output_channels):
+            """Independent scalar loops using the INC's documented HWIO index."""
+            height, width, input_channels = x.shape
+            result = np.zeros((height, width, output_channels), dtype=np.float64)
+            for y in range(height):
+                for x_pos in range(width):
+                    for co in range(output_channels):
+                        value = float(bias[co])
+                        for ky in range(kernel):
+                            for kx in range(kernel):
+                                source_y = y + ky - kernel // 2
+                                source_x = x_pos + kx - kernel // 2
+                                if not (0 <= source_y < height and 0 <= source_x < width):
+                                    continue  # Same zero padding as SmallSR.
+                                for ci in range(input_channels):
+                                    index = (((ky * kernel + kx) * input_channels + ci)
+                                             * output_channels + co)
+                                    value += (float(x[source_y, source_x, ci])
+                                              * float(weight[index]))
+                        result[y, x_pos, co] = value
+            return result
+
+        lr = np.linspace(-0.7, 0.9, 18, dtype=np.float32).reshape(1, 2, 3, 3)
+        hidden1 = scalar_conv(lr[0], arrays["w1"], arrays["b1"], 5, 16)
+        hidden1[hidden1 < 0.0] = 0.0
+        hidden2 = scalar_conv(hidden1, arrays["w2"], arrays["b2"], 3, 16)
+        hidden2[hidden2 < 0.0] = 0.0
+        conv3 = scalar_conv(hidden2, arrays["w3"], arrays["b3"], 3, 12)
+
+        # A smooth, non-identity stand-in for the caller's bicubic 2x base.
+        base = np.empty((1, 4, 6, 3), dtype=np.float32)
+        for y in range(4):
+            for x_pos in range(6):
+                for rgb in range(3):
+                    base[0, y, x_pos, rgb] = (
+                        0.1 + 0.02 * x_pos - 0.01 * y + 0.001 * x_pos * x_pos
+                        - 0.0005 * y * y + 0.0002 * x_pos * y + 0.03 * rgb
+                    )
+        actual = base[0].astype(np.float64)
+        for y in range(2):
+            for x_pos in range(3):
+                for sub_y in range(2):
+                    for sub_x in range(2):
+                        for rgb in range(3):
+                            channel = (sub_y * 2 + sub_x) * 3 + rgb
+                            actual[y * 2 + sub_y, x_pos * 2 + sub_x, rgb] += conv3[
+                                y, x_pos, channel
+                            ]
+
+        model = SmallSR.load(self.model, synthetic_structure())
+        expected = model.predict(lr, base)[0]
+        np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
     def test_rejects_unsupported_structures(self):
         cases = (
