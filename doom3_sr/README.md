@@ -74,10 +74,19 @@ python3 doom3_sr/compare_device.py \
 
 ## Validation and metric boundary
 
+After downloading a formal run, validate finite weights, full training histories, original source hashes, train/test separation, aggregate metrics, model selection and export hashes. The validator also independently recomputes selected-model and bicubic predictions from every held-out original HR image, with explicit cross-NumPy tolerances:
+
 ```sh
-python3 -m unittest doom3_sr.test_export_glsl doom3_sr.test_train_doom doom3_sr.test_compare_device -v
+python3 doom3_sr/validate_run.py \
+  --run /path/to/downloaded-run --data /path/to/original-hr \
+  --output /path/to/validation.json
+# Add --test-data /path/to/original-heldout-hr when a separate test root was used.
+
+python3 -m unittest \
+  doom3_sr.test_export_glsl doom3_sr.test_train_doom \
+  doom3_sr.test_compare_device doom3_sr.test_validate_run -v
 ```
 
-The tests use synthetic temporary data only. They check every emitted float and array layout, hashes, invalid weights, exact duplicate removal, group splitting, and that interior training patches exactly match full-frame Pillow bicubic resize. A 20-step end-to-end smoke also checks training, selection, and export; it is not quality evidence.
+The tests use synthetic temporary data only. They check every emitted float and array layout, scalar GLSL output semantics, hashes, invalid weights, exact/near-duplicate removal, group splitting, full-frame bicubic patch equivalence, device metrics/FPS, and rejection of tampered formal artifacts. End-to-end smoke runs check training, selection, export and validation; they are not quality evidence.
 
 PSNR is full-frame RGB with 8-bit peak 255. SSIM is per-channel 11×11 Gaussian (σ=1.5), K1=0.01 and K2=0.03. Because LR is downsampled HR, these are simulated-LR offline results, not native-rendered LR pairs. macmini NumPy inference time is not phone FPS. Device FPS and visual on/off conclusions require the separate engine integration and matched phone captures.
