@@ -4,7 +4,7 @@ Trains the QRISP 5,276-parameter residual network on Doom 3 phone captures using
 
 ## Train and export
 
-Input can be an HR-only directory, or a JSON/JSONL manifest whose items contain `hr` (also accepts `path`/`file`) and optional `scene`, `frame`, `group`, `device`, and `split`. Image paths in a manifest are relative to that manifest. With no explicit split, exact duplicate files are removed and the script prefers a deterministic group-level holdout; a frame-level fallback is labelled in `data-manifest.json` because near-duplicates may remain.
+Input can be an HR-only directory, or a JSON/JSONL manifest whose items contain `hr` (also accepts `path`/`file`) and optional `scene`, `frame`, `group`, `device`, and `split`. Image paths in a manifest are relative to that manifest. Exact duplicate files are removed first. By default, a frame is also skipped when its 64×64 luma thumbnail differs from the last kept frame by less than **0.5 8-bit levels mean absolute difference**; set `--min-frame-mad 0` to disable this near-duplicate filter. Counts and rejected paths are recorded in `data-manifest.json`. With no explicit split, the script prefers a deterministic group-level holdout; a frame-level fallback is labelled because near-duplicates may remain.
 
 ```sh
 python3 doom3_sr/train_doom.py \
@@ -58,10 +58,23 @@ The include is weights only, for GLSL ES 3.x:
 
 For real-time integration, avoid blindly evaluating all three convolutions independently at every HR fragment: that repeats conv1/conv2 for all four subpixels. Compute/cache the 16-channel LR feature map once per LR pixel, then evaluate only the three conv3 channels needed by each HR fragment, or use equivalent multi-pass feature textures. The full network is 5,232 MAC/LR pixel (2.71 GMAC at 960×540), excluding bicubic, ReLU, pixel shuffle, and display conversion.
 
+## Device screenshot and FPS comparison
+
+Prepare a JSON manifest with an `items` list. Each item contains relative `native`, `bicubic`, and `sr` image paths plus an optional `label` and `crop: [x,y,width,height]`. All three images must show the same game state and have identical dimensions. The tool writes per-frame and mean RGB PSNR/SSIM, SR-minus-bicubic deltas, a native-resolution crop contact sheet, and optional FPS deltas supplied by the device owner:
+
+```sh
+python3 doom3_sr/compare_device.py \
+  --manifest /path/to/device-comparison.json --out /path/to/device-results \
+  --fps-native 60.0 --fps-bicubic 45.0 --fps-sr 40.0 \
+  --full-thumbnails
+```
+
+FPS values above are syntax examples only, not measurements. Omit all FPS arguments until real matched measurements are available. `summary.json` preserves which values were supplied and never substitutes macmini timing.
+
 ## Validation and metric boundary
 
 ```sh
-python3 -m unittest doom3_sr.test_export_glsl doom3_sr.test_train_doom -v
+python3 -m unittest doom3_sr.test_export_glsl doom3_sr.test_train_doom doom3_sr.test_compare_device -v
 ```
 
 The tests use synthetic temporary data only. They check every emitted float and array layout, hashes, invalid weights, exact duplicate removal, group splitting, and that interior training patches exactly match full-frame Pillow bicubic resize. A 20-step end-to-end smoke also checks training, selection, and export; it is not quality evidence.
