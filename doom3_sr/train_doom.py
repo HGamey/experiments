@@ -242,6 +242,16 @@ def evaluate(model, records, label):
     }
 
 
+def add_baseline_comparison(result, baseline):
+    baseline_by_path = {item["relative_path"]: item for item in baseline["frames"]}
+    deltas = [item["rgb_psnr_db"] - baseline_by_path[item["relative_path"]]["rgb_psnr_db"] for item in result["frames"]]
+    result["delta_psnr_db_vs_bicubic"] = result["mean_rgb_psnr_db"] - baseline["mean_rgb_psnr_db"]
+    result["delta_ssim_vs_bicubic"] = result["mean_rgb_ssim_11x11"] - baseline["mean_rgb_ssim_11x11"]
+    result["psnr_improved_frames_vs_bicubic"] = int(sum(delta > 0 for delta in deltas))
+    result["psnr_regressed_frames_vs_bicubic"] = int(sum(delta < 0 for delta in deltas))
+    return result
+
+
 def make_sheets(records, model, out):
     for mode in ("full", "crop"):
         width, height = (320, 180) if mode == "full" else (256, 256)
@@ -342,8 +352,7 @@ def main():
         structure = json.loads(Path(args.pretrained_structure).read_text())
         pretrained = SmallSR.load(args.pretrained, structure)
         result = evaluate(pretrained, test_records, "qrisp_pretrained")
-        result["delta_psnr_db_vs_bicubic"] = result["mean_rgb_psnr_db"] - baseline["mean_rgb_psnr_db"]
-        result["delta_ssim_vs_bicubic"] = result["mean_rgb_ssim_11x11"] - baseline["mean_rgb_ssim_11x11"]
+        add_baseline_comparison(result, baseline)
         summary["variants"]["qrisp_pretrained"] = result
         summary["pretrained_sha256"] = sha256_file(args.pretrained)
 
@@ -382,8 +391,7 @@ def main():
         (out / f"{name}-structure.json").write_text(json.dumps(structure, indent=2) + "\n")
         (out / f"{name}-training-history.json").write_text(json.dumps({"l1": history}, indent=2) + "\n")
         result = evaluate(model, test_records, name)
-        result["delta_psnr_db_vs_bicubic"] = result["mean_rgb_psnr_db"] - baseline["mean_rgb_psnr_db"]
-        result["delta_ssim_vs_bicubic"] = result["mean_rgb_ssim_11x11"] - baseline["mean_rgb_ssim_11x11"]
+        add_baseline_comparison(result, baseline)
         result["structure"] = structure
         summary["variants"][name] = result
         models[name] = model
@@ -405,13 +413,16 @@ def main():
     selected_structure["npz_file"] = "selected.npz"
     (out / "selected-structure.json").write_text(json.dumps(selected_structure, indent=2) + "\n")
     inc_path, glsl_manifest_path = export_glsl(out / "selected.npz", out / "selected-structure.json", out / "doom_small_sr")
+    selected_delta = summary["variants"][selected]["delta_psnr_db_vs_bicubic"]
     selection = {
         "selected_variant": selected,
         "model": "selected.npz",
         "structure": "selected-structure.json",
         "glsl_inc": inc_path.name,
         "glsl_manifest": glsl_manifest_path.name,
-        "reason": "highest held-out mean RGB PSNR",
+        "reason": "highest held-out mean RGB PSNR among model variants",
+        "delta_psnr_db_vs_bicubic": selected_delta,
+        "recommended_over_bicubic": bool(selected_delta > 0),
     }
     (out / "selection.json").write_text(json.dumps(selection, indent=2) + "\n")
     summary["selected_variant"] = selected
