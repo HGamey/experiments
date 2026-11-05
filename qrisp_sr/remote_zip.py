@@ -4,6 +4,7 @@ Only requested byte ranges are transferred. The implementation deliberately
 rejects servers that silently ignore Range, so a metadata read cannot turn into
 an accidental multi-gigabyte download.
 """
+import http.client
 import re
 import time
 import urllib.error
@@ -64,7 +65,7 @@ class HTTPRangeFile:
         if hasattr(self, "size") and end >= self.size:
             raise ValueError(f"range past end of {self.size}-byte object: {start}-{end}")
         last_error = None
-        for attempt in range(4):
+        for attempt in range(6):
             request = urllib.request.Request(
                 self.url,
                 headers={
@@ -78,6 +79,9 @@ class HTTPRangeFile:
                     body = response.read()
                     status = response.status
                     headers = response.headers
+                expected = end - start + 1
+                if status == 206 and len(body) != expected:
+                    raise http.client.IncompleteRead(body, expected - len(body))
                 self.requests += 1
                 self.bytes_read += len(body)
                 return status, headers, body
@@ -85,11 +89,11 @@ class HTTPRangeFile:
                 if exc.code not in {429, 500, 502, 503, 504}:
                     raise
                 last_error = exc
-            except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+            except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
                 last_error = exc
-            if attempt < 3:
+            if attempt < 5:
                 time.sleep(0.5 * (2**attempt))
-        raise RuntimeError(f"range GET failed after 4 attempts: {last_error}")
+        raise RuntimeError(f"range GET failed after 6 attempts: {last_error}")
 
     def read_at(self, start, length):
         if length < 0 or length > self.max_read_bytes:
@@ -100,17 +104,24 @@ class HTTPRangeFile:
         wanted = end - start
         if wanted == 0:
             return b""
-        status, headers, body = self._request(start, end - 1)
-        if status != 206:
-            raise RuntimeError(f"range read returned HTTP {status}, expected 206")
-        match = _CONTENT_RANGE.match(headers.get("Content-Range", ""))
-        if not match or int(match.group(1)) != start or int(match.group(2)) != end - 1:
-            raise RuntimeError(
-                f"unexpected Content-Range: {headers.get('Content-Range')!r}"
-            )
-        if len(body) != wanted:
-            raise RuntimeError(f"short range read: got {len(body)}, wanted {wanted}")
-        return body
+        chunks = []
+        chunk_size = 1024 * 1024
+        for chunk_start in range(start, end, chunk_size):
+            chunk_end = min(end, chunk_start + chunk_size)
+            status, headers, body = self._request(chunk_start, chunk_end - 1)
+            if status != 206:
+                raise RuntimeError(f"range read returned HTTP {status}, expected 206")
+            match = _CONTENT_RANGE.match(headers.get("Content-Range", ""))
+            if not match or int(match.group(1)) != chunk_start or int(match.group(2)) != chunk_end - 1:
+                raise RuntimeError(
+                    f"unexpected Content-Range: {headers.get('Content-Range')!r}"
+                )
+            if len(body) != chunk_end - chunk_start:
+                raise RuntimeError(
+                    f"short range read: got {len(body)}, wanted {chunk_end - chunk_start}"
+                )
+            chunks.append(body)
+        return b"".join(chunks)
 
     def read(self, length=-1):
         if self.closed:
