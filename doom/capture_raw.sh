@@ -52,8 +52,8 @@ echo "INSTALL: $INST_OUT"
 echo "$INST_OUT" | grep -qi 'success' || { echo "FATAL: install failed"; exit 5; }
 
 # 3) 目标目录; uid 用 dumpsys 解析 (pilot 10386 是那台机的值, 每机不同)
-BASE=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3
-STATE=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/state
+BASE=/storage/emulated/0/diii4a/doom3
+STATE=/storage/emulated/0/diii4a/state
 UID_=$(sh_ "cmd package list packages -U 2>/dev/null | grep '$PKG' | sed 's/.*uid://' | tr -d ' '" | head -1)
 [ -n "$UID_" ] || UID_=$(sh_ "su -c 'stat -c %u /data/data/$PKG' 2>/dev/null" | head -1 | tr -d ' ')
 echo "APP_UID=$UID_"
@@ -70,14 +70,14 @@ sh_ "sha256sum /data/local/tmp/doom_stage/doom3/base/demo00.pk4" | grep -q "$PK4
 sh_ "[ -f /data/local/tmp/doom_stage/state/base/script/weapon_base.script ] && sha256sum /data/local/tmp/doom_stage/state/base/script/weapon_base.script" | grep -q "$SCRIPT_SHA" || { echo "FATAL: script missing/mismatch"; exit 4; }
 # 落位: root 用 su (顺带修属主), 否则试 shell 直写 Android/data
 if sh_ "su -c true" >/dev/null 2>&1; then
-  sh_ "su -c 'mkdir -p /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/ && mkdir -p /data/media/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/media/0/Android/data/$PKG/files/diii4a/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a -type f -exec chmod 660 {} \;'"
+  sh_ "su -c 'mkdir -p /data/media/0/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/diii4a/ && chown -R $UID_:$UID_ /data/media/0/diii4a && find /data/media/0/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/diii4a -type f -exec chmod 660 {} \;'"
   HOW=su
 else
-  sh_ "mkdir -p /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001 /storage/emulated/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/ && cp -r /data/local/tmp/doom_stage/doom3 /storage/emulated/0/Android/data/$PKG/files/diii4a/" >/dev/null
+  sh_ "mkdir -p /storage/emulated/0/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/diii4a/" >/dev/null
   HOW=shell
 fi
 # 落位核查必须 su (FUSE 下 shell 对 Android/data 一律 EACCES, 不代表文件不存在)
-sh_ "su -c 'ls -la /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/base/demo00.pk4 /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4; sha256sum /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/base/demo00.pk4'" || { echo "FATAL: pk4 not in place (su check failed)"; exit 9; }
+sh_ "su -c 'ls -la /data/media/0/diii4a/doom3/base/demo00.pk4; sha256sum /data/media/0/diii4a/doom3/base/demo00.pk4'" || { echo "FATAL: pk4 not in place (su check failed)"; exit 9; }
 
 # 4) 启动 (冻结命令, fs_savepath 指自己的 state; com_showFPS 开着便于人看; logfile 2 留控制台日志)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
@@ -86,7 +86,7 @@ CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set logfile 2 +set
 LIB_SHA="${LIB_SHA:-}"
 if [ -n "$LIB_SHA" ] && [ -f "$CACHE/blobs/$LIB_SHA" ] && sh_ "su -c true" >/dev/null 2>&1; then
   push_ "$CACHE/blobs/$LIB_SHA" /data/local/tmp/doom_stage/doom3/libdoom3.so >/dev/null
-  sh_ "su -c 'cp /data/local/tmp/doom_stage/doom3/libdoom3.so /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so && chown $UID_:$UID_ /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so && chmod 660 /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so'" >/dev/null
+  sh_ "su -c 'cp /data/local/tmp/doom_stage/doom3/libdoom3.so /data/media/0/diii4a/doom3/libdoom3.so && chown $UID_:$UID_ /data/media/0/diii4a/doom3/libdoom3.so && chmod 660 /data/media/0/diii4a/doom3/libdoom3.so'" >/dev/null
   PREF=/data/user/0/$PKG/shared_prefs/${PKG}_preferences.xml
   sh_ "su -c '[ -f $PREF ] && sed \"/name=\\\"harm_load_local_engine_lib\\\"/d; /<\\/map>/i\\\\    <boolean name=\\\"harm_load_local_engine_lib\\\" value=\\\"true\\\" />\" $PREF > $PREF.p2 && chown $UID_:$UID_ $PREF.p2 && chmod 600 $PREF.p2 && mv $PREF.p2 $PREF && restorecon $PREF'" >/dev/null && echo "LOCAL_LIB_ARMED=$LIB_SHA"
 fi

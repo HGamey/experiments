@@ -14,7 +14,7 @@ SR_REF="${SR_REF:-codex/doom3-realtime-sr}"
 SR_COMMIT="${SR_COMMIT:-65b00e2}"; [ ${#SR_COMMIT} -eq 40 ] || SR_COMMIT="65b00e29cb5c4be0184b3ba10e7ff5108d7040de"
 ARMS="${ARMS:-native,off,on}"
 WINDOW="${WINDOW:-20}"
-DATA=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001
+DATA=/storage/emulated/0/diii4a
 BASE=$DATA/doom3
 STATE=$DATA/state
 OUT="${PF_JOB_OUT:-$(pwd)/sr_out}/sr_install_$(date +%Y%m%d-%H%M%S)-$SERIAL"
@@ -32,9 +32,10 @@ SO_SRC="$CACHE/blobs/$SO_SHA"
 if [ ! -f "$SO_SRC" ]; then
   W="$OUT/src"; mkdir -p "$W"
   git clone --depth 1 -b "$SR_REF" "$SR_GIT" "$W/experiments" 2>&1 | tail -1
-  [ "$(git -C "$W/experiments" rev-parse HEAD)" = "$SR_COMMIT" ] || { echo "FATAL: commit mismatch"; exit 3; }
+  echo "BRANCH_HEAD=$(git -C "$W/experiments" rev-parse HEAD) (期望 $SR_COMMIT, 允许前移)"
   tar xzf "$W/experiments/doom3-sr/realtime/artifacts/small-sr-pipeline-fixture-arm64.tar.gz" -C "$W"
   SO_SRC="$W/libdoom3.so"
+  [ "$(shasum -a 256 "$SO_SRC" | cut -d ' ' -f 1)" = "$SO_SHA" ] || { echo "FATAL: fixture libdoom3.so sha mismatch"; exit 3; }
 fi
 echo "SO_SHA256=$(shasum -a 256 "$SO_SRC" | cut -d ' ' -f 1)"
 
