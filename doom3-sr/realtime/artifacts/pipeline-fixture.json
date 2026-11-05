@@ -1,0 +1,21 @@
+{
+  "purpose": "UNTRAINED SYNTHETIC WEIGHTS: pipeline/load/driver/performance test only; not Doom3 model quality",
+  "upstream": "https://github.com/glKarin/com.n0n3m4.diii4a",
+  "upstream_commit": "ce49510f3b0c04969eab8ebe8238416e84e4f0bb",
+  "upstream_tag": "v1.1.0harmattan73",
+  "abi": "arm64-v8a",
+  "min_api": 24,
+  "ndk": "23.2.8568313",
+  "files": {
+    "libdoom3.so": {
+      "sha256": "bca5e78894ad4ea258da26e14099d72681dc2c72a674debf4a6ed8e84791285a",
+      "bytes": 8196656
+    },
+    "weights.npz": {
+      "sha256": "d1698304089e318b44d9e337e492461283fe197175fdf2b9dd8d2f4a917168a3",
+      "bytes": 22542
+    }
+  },
+  "archive_sha256": "44685c177b71d199e8a326b36d58461a57151e43cc85c328d1548ef166af4588",
+  "archive_bytes": 4116801
+}
