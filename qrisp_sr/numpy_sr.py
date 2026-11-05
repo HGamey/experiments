@@ -54,12 +54,13 @@ def depth_to_space_backward(dout):
 
 
 class SmallSR:
-    def __init__(self, channels=16, residual=True, seed=20261106):
+    def __init__(self, channels=16, residual=True, seed=20261106, input_channels=3):
         self.channels = channels
         self.residual = residual
+        self.input_channels = input_channels
         rng = np.random.default_rng(seed)
         self.params = {
-            "w1": (rng.standard_normal((5, 5, 3, channels)) * np.sqrt(2 / 75)).astype(np.float32),
+            "w1": (rng.standard_normal((5, 5, input_channels, channels)) * np.sqrt(2 / (25 * input_channels))).astype(np.float32),
             "b1": np.zeros(channels, dtype=np.float32),
             "w2": (rng.standard_normal((3, 3, channels, channels)) * np.sqrt(2 / (9 * channels))).astype(np.float32),
             "b2": np.zeros(channels, dtype=np.float32),
@@ -117,6 +118,7 @@ class SmallSR:
         model = cls(
             channels=structure["channels"],
             residual=structure["bicubic_residual"],
+            input_channels=structure.get("input_channels", 3),
         )
         with np.load(weights_path, allow_pickle=False) as weights:
             expected = set(model.params)
@@ -130,8 +132,12 @@ class SmallSR:
 
     def structure(self):
         c = self.channels
+        i = self.input_channels
+        conv1_parameters = 25 * i * c + c
+        conv1_macs = 25 * i * c
+        total_macs = conv1_macs + 9 * c * c + 108 * c
         layers = [
-            {"name": "conv1", "operator": "Conv2D same", "kernel": [5, 5], "input_channels": 3, "output_channels": c, "parameters": 75 * c + c, "macs_per_lr_pixel": 75 * c},
+            {"name": "conv1", "operator": "Conv2D same", "kernel": [5, 5], "input_channels": i, "output_channels": c, "parameters": conv1_parameters, "macs_per_lr_pixel": conv1_macs},
             {"name": "relu1", "operator": "ReLU", "channels": c, "parameters": 0, "macs_per_lr_pixel": 0},
             {"name": "conv2", "operator": "Conv2D same", "kernel": [3, 3], "input_channels": c, "output_channels": c, "parameters": 9 * c * c + c, "macs_per_lr_pixel": 9 * c * c},
             {"name": "relu2", "operator": "ReLU", "channels": c, "parameters": 0, "macs_per_lr_pixel": 0},
@@ -143,12 +149,13 @@ class SmallSR:
         return {
             "layout": "NHWC",
             "scale": 2,
+            "input_channels": i,
             "channels": c,
             "bicubic_residual": self.residual,
             "layers": layers,
             "parameters": sum(int(x.size) for x in self.params.values()),
-            "macs_per_lr_pixel": 75 * c + 9 * c * c + 108 * c,
-            "macs_540p_frame": (75 * c + 9 * c * c + 108 * c) * 960 * 540,
+            "macs_per_lr_pixel": total_macs,
+            "macs_540p_frame": total_macs * 960 * 540,
             "float32_weight_bytes": sum(int(x.nbytes) for x in self.params.values()),
         }
 

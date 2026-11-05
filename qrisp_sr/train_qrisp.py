@@ -14,6 +14,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from extract_pilot import read_entry
+from exr import decode_exr
+from motion import align_previous
 from numpy_sr import Adam, SmallSR
 from remote_zip import HTTPRangeFile
 
@@ -70,7 +72,7 @@ def choose_indices(items, count):
     return sorted(set(int(x) for x in np.linspace(0, len(items) - 1, count)))
 
 
-def load_remote_scene(scene, pair_count):
+def load_remote_scene(scene, pair_count, motion=False):
     folder, split = SCENES[scene]
     url = BASE_URL + scene + ".zip"
     remote = HTTPRangeFile(url)
@@ -123,6 +125,35 @@ def load_remote_scene(scene, pair_count):
                 hr_path,
             )
             record["source"]["archive_url"] = url
+            if motion:
+                history = np.zeros(record["lr"].shape, dtype=np.float32)
+                history_valid = np.zeros(record["lr"].shape[:2], dtype=bool)
+                record["source"]["has_real_history"] = int(frame) > 0
+                if int(frame) > 0:
+                    previous_frame = f"{int(frame) - 1:04d}"
+                    previous_path = f"{lr_prefix}{segment}/{previous_frame}.png"
+                    motion_path = f"{folder}/540p/MotionVectorsMipBiasMinus1/{segment}/{frame}.exr"
+                    if previous_path not in infos or motion_path not in infos:
+                        raise RuntimeError(f"missing history: {previous_path} / {motion_path}")
+                    previous_payload = read_entry(remote, infos[previous_path])
+                    motion_payload = read_entry(remote, infos[motion_path])
+                    prepare_started = time.perf_counter()
+                    previous = np.asarray(decode(previous_payload), dtype=np.float32) / 255
+                    vectors, channel_names, _ = decode_exr(motion_payload)
+                    motion_rg = vectors[:, :, [channel_names.index("R"), channel_names.index("G")]]
+                    history, history_valid = align_previous(previous, motion_rg)
+                    record["history_prepare_s"] = time.perf_counter() - prepare_started
+                    if scene == "seaport" and frame == "0059":
+                        record["previous_lr"] = previous
+                    record["source"].update({
+                        "previous_lr_path": previous_path,
+                        "motion_path": motion_path,
+                        "previous_lr_sha256": hashlib.sha256(previous_payload).hexdigest(),
+                        "motion_sha256": hashlib.sha256(motion_payload).hexdigest(),
+                    })
+                record.setdefault("history_prepare_s", 0.0)
+                record["history"] = history
+                record["history_valid"] = history_valid
             records.append(record)
             print(f"DATA {scene} {index + 1}/{pair_count} {segment}/{frame}", flush=True)
     return records, {
@@ -280,7 +311,8 @@ def main():
         data_report["scenes"].append(scene_report)
         data_report.update(train_pairs=len(train_records), test_pairs=len(test_records))
     data_report["decoded_array_bytes"] = sum(
-        sum(record[key].nbytes for key in ("lr", "hr", "base")) for record in train_records + test_records
+        sum(record[key].nbytes for key in ("lr", "hr", "base", "history", "history_valid", "previous_lr") if key in record)
+        for record in train_records + test_records
     )
     data_report["raw_archives_written"] = 0
     data_report["sources"] = [record["source"] | {"scene": record["scene"], "segment": record["segment"], "frame": record["frame"]} for record in train_records + test_records]

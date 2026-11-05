@@ -23,6 +23,23 @@ All variants use NHWC RGB input, `Conv2D same → ReLU → Conv2D same → ReLU 
 
 At 960×540 input, the base convolutions execute 2,712,268,800 MACs per frame; the doubled-channel variant executes 7,813,324,800. The residual variant adds a Pillow bicubic 2× image to the network output. Weights are float32 NPZ files with per-layer JSON descriptions.
 
+## Motion-history extension
+
+`train_qrisp_motion.py` compares the same 16-channel residual network with two inputs: current LR only (`base_3ch`) and current LR plus motion-aligned previous LR (`motion_6ch`). The six-channel first convolution increases the model to **6,476 parameters and 6,432 MAC/LR pixel**.
+
+The extension reads `MotionVectorsMipBiasMinus1` EXR and the immediately previous `540p/MipBiasMinus1` PNG. The minimal ZIP scanline EXR decoder is checked against ffmpeg; alignment uses `current_pixel - MV_R/G * (width,height)` with bilinear sampling and a validity mask. Frame `0000` has zero history and is excluded from the primary real-history comparison. Formal data therefore has 24 real-history training pairs and five real-history SeaPort test pairs, plus the no-history first samples.
+
+```sh
+python3 qrisp_sr/train_qrisp_motion.py --steps 10000
+
+python3 qrisp_sr/infer_qrisp_motion.py \
+  --model motion_6ch.npz --structure motion_6ch-structure.json \
+  --current 0059.png --previous 0058.png --motion 0059.exr \
+  --output prediction.png
+```
+
+Model timing, EXR/PNG decode plus warp timing, and bicubic timing are reported separately. Raw EXR/PNG files, weights, and comparison crops remain platform-only artifacts.
+
 ## Run
 
 On macmini-3 through the platform (replace the commit with the intended immutable revision):
