@@ -10,6 +10,8 @@
 - `gfrc/`：厂商 G-FRC+ 对照 A/B。
 - `npu_exp/`：原神 NPU 超分三臂对照（N3，BH3GEI）。层和模型取自作者机器上的 N1 产物，在别处跑要给 `--layer-so` 和 `--model`。报告在 HGamey/docs 的 `experiments/2026-10-20-npu-sr`。
 - `o2_dvfs/`、`repro/`：O2 DVFS 扫描与复现打包。`repro/pack_repro.py` 生成的脚本仍假定在 phonefarm 老位置运行。
+- `doom3_sr/`：Doom 3 HR 采集帧的小模型训练、QRISP 微调、离线评估与 GLSL ES 权重导出；数据、NPZ 和对比图不进仓库。
+- `qrisp_sr/`：Qualcomm QRISP 小超分训练、推理、运动历史对照与评估帧运动量测。
 
 历史来自 HGamey/hgamey 的 `phonefarm/loop_v1/` 与 `phonefarm/feat/selfsr` 分支，作者和时间保留。
 
