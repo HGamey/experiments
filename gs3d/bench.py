@@ -14,6 +14,7 @@
 功耗: 本机没有可用的停充节点 (见 README 段落/报告)，按 整机≈USB 输入功率−电池充入功率 估算，另给相对空白页的增量。
 """
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -68,15 +69,35 @@ class Dev:
         return self.run("shell", f"su -c 'sh -c \"{cmd}\"' </dev/null", timeout=timeout)
 
 
-def fetch(url, dest, log):
-    if os.path.exists(dest):
-        return
-    t = time.time()
-    tmp = dest + ".part"
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        shutil.copyfileobj(r, f, 1 << 20)
-    os.replace(tmp, dest)
-    log(f"下载 {url} → {os.path.getsize(dest)} B, {time.time() - t:.1f}s")
+VIEWER_SHA256 = {"main.js": "b63e01a96e28d88039c2df5bc7ea33cacee13dea298cc2a357d284f4e7ca81a2",
+                 "index.html": "42f8ee41d24ca4b1e8a5b0d78656127952b7909235195fa3c2bd4fb30228ff92"}
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def fetch(url, dest, log, want=None, tries=4):
+    """下载到 dest；给了 want 时校验 sha256，不符就重下 (raw CDN 偶尔回错内容)。"""
+    for i in range(tries):
+        if os.path.exists(dest) and (not want or sha256(dest) == want):
+            return
+        t = time.time()
+        tmp = dest + ".part"
+        try:
+            with urllib.request.urlopen(url, timeout=300) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            os.replace(tmp, dest)
+            log(f"下载 {url} → {os.path.getsize(dest)} B, {time.time() - t:.1f}s")
+        except Exception as ex:
+            log(f"下载失败 {url}: {ex}")
+        time.sleep(2 * i)
+    if not os.path.exists(dest) or (want and sha256(dest) != want):
+        raise RuntimeError(f"{url} 下载/校验失败")
 
 
 def patch_viewer(src):
@@ -108,8 +129,8 @@ def patch_viewer(src):
 
 def prepare_www(www, scenes, mirror, log):
     os.makedirs(os.path.join(www, "scenes"), exist_ok=True)
-    fetch(VIEWER_RAW + "main.js", os.path.join(www, "main.orig.js"), log)
-    fetch(VIEWER_RAW + "index.html", os.path.join(www, "index.orig.html"), log)
+    fetch(VIEWER_RAW + "main.js", os.path.join(www, "main.orig.js"), log, VIEWER_SHA256["main.js"])
+    fetch(VIEWER_RAW + "index.html", os.path.join(www, "index.orig.html"), log, VIEWER_SHA256["index.html"])
     with open(os.path.join(www, "main.orig.js")) as f:
         js = patch_viewer(f.read())
     with open(os.path.join(www, "main.js"), "w") as f:
