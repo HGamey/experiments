@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from doom3_sr.train_doom import assign_split, base_patch, decode_record, deduplicate, discover, filter_near_duplicates, make_base
+from doom3_sr.train_doom import assign_split, base_patch, decode_record, deduplicate, discover, filter_near_duplicates
 
 
 class DoomTrainingPreparationTests(unittest.TestCase):
@@ -15,31 +15,17 @@ class DoomTrainingPreparationTests(unittest.TestCase):
             path = Path(temporary) / "synthetic.png"
             rng = np.random.default_rng(19)
             Image.fromarray(rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)).save(path)
-            record = decode_record({"path": path}, "pillow_u8")
+            record = decode_record({"path": path})
             full = np.asarray(Image.fromarray(record["lr"]).resize((64, 48), Image.Resampling.BICUBIC))
             patch = 8
             checked = 0
             for y in range(2, record["lr"].shape[0] - patch - 1, 3):
                 for x in range(2, record["lr"].shape[1] - patch - 1, 3):
-                    actual = base_patch(record, x, y, patch, "pillow_u8")
+                    actual = base_patch(record, x, y, patch)
                     expected = full[2 * y : 2 * (y + patch), 2 * x : 2 * (x + patch)]
                     np.testing.assert_array_equal(actual, expected)
                     checked += 1
             self.assertGreater(checked, 20)
-
-    def test_float_base_patch_matches_full_resize(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "synthetic.png"
-            rng = np.random.default_rng(23)
-            Image.fromarray(rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)).save(path)
-            record = decode_record({"path": path}, "float_a-0.5")
-            self.assertEqual(record["lr"].dtype, np.float32)
-            full = make_base(record, "float_a-0.5")
-            patch = 8
-            for y, x in ((2, 2), (3, 7), (5, 11), (8, 14)):
-                actual = base_patch(record, x, y, patch, "float_a-0.5")
-                expected = full[2 * y : 2 * (y + patch), 2 * x : 2 * (x + patch)]
-                np.testing.assert_array_equal(actual, expected)
 
     def test_near_duplicate_filter_compares_with_last_kept(self):
         with tempfile.TemporaryDirectory() as temporary:

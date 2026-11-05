@@ -1,12 +1,10 @@
 # Doom 3 small 2× super-resolution
 
-Trains the QRISP 5,276-parameter residual network on Doom 3 phone captures using NumPy on macmini-3. The capture task supplies native HR frames; this script creates simulated LR at 0.5×. The default is **continuous float32 bicubic with a=-0.5 and no intermediate uint8 quantization**, matching the shader contract. `--resize-impl pillow_u8` selects the legacy Pillow path with uint8 LR/base. The script does not access a phone.
+Trains the QRISP 5,276-parameter residual network on Doom 3 phone captures using NumPy on macmini-3. The capture task supplies native HR frames; this script creates LR with Pillow bicubic 0.5×. It does not access a phone.
 
 ## Train and export
 
 Input can be an HR-only directory, or a JSON/JSONL manifest whose items contain `hr` (also accepts `path`/`file`) and optional `scene`, `frame`, `group`, `device`, and `split`. Image paths in a manifest are relative to that manifest. Exact duplicate files are removed first. By default, a frame is also skipped when its 64×64 luma thumbnail differs from the last kept frame by less than **0.5 8-bit levels mean absolute difference**; set `--min-frame-mad 0` to disable this near-duplicate filter. Counts and rejected paths are recorded in `data-manifest.json`. With no explicit split, the script prefers a deterministic group-level holdout; a frame-level fallback is labelled because near-duplicates may remain.
-
-The float resize uses `src=(dst+0.5)/scale-0.5`, the Keys cubic kernel, normalized weights, and clamp-to-edge samples. Downsampling widens support to `2/scale` and evaluates the kernel at `distance*scale`. There is no clipping or 8-bit rounding between HR→LR and LR→base. These facts, the implementation name, and the presence/absence of quantization are recorded in `data-manifest.json` and `summary.json`.
 
 ```sh
 python3 doom3_sr/train_doom.py \
@@ -55,7 +53,7 @@ The include is weights only, for GLSL ES 3.x:
 - Logical activations are NHWC. Weights are flattened in C-order HWIO: `(((ky*K + kx)*Cin + ci)*Cout + co)`. The include provides `W1_INDEX`, `W2_INDEX`, and `W3_INDEX` macros.
 - `conv1`: 5×5, RGB→16, same zero padding, ReLU. `conv2`: 3×3, 16→16, same zero padding, ReLU. `conv3`: 3×3, 16→12, same zero padding, no ReLU.
 - Pixel shuffle: `conv3_channel = (sub_y*2 + sub_x)*3 + rgb`; `HR_xy = LR_xy*2 + (sub_x,sub_y)`.
-- Add the caller-provided 2× bicubic RGB residual. Formal float-mode training expects the continuous a=-0.5 contract above; Pillow-u8 runs must be labelled and aligned separately. The include does **not** implement bicubic sampling or final display conversion. Clamp the final display RGB as appropriate.
+- Add the caller-provided 2× bicubic RGB residual. The include does **not** implement bicubic sampling or final display conversion. Clamp the final display RGB as appropriate.
 - The manifest records each shape and length, exact source-NPZ and generated-include SHA-256, and total float32 bytes. Nine-significant-digit decimal literals round-trip every float32 value.
 
 For real-time integration, avoid blindly evaluating all three convolutions independently at every HR fragment: that repeats conv1/conv2 for all four subpixels. Compute/cache the 16-channel LR feature map once per LR pixel, then evaluate only the three conv3 channels needed by each HR fragment, or use equivalent multi-pass feature textures. The full network is 5,232 MAC/LR pixel (2.71 GMAC at 960×540), excluding bicubic, ReLU, pixel shuffle, and display conversion.

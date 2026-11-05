@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from numpy_sr import Adam, SmallSR  # noqa: E402
 from train_qrisp import metrics  # noqa: E402
 from export_glsl import export as export_glsl  # noqa: E402
-from bicubic import resize_bicubic  # noqa: E402
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
@@ -190,54 +189,32 @@ def assign_split(descriptors, test_fraction):
     return train, test, method
 
 
-def decode_record(item, resize_impl="float_a-0.5"):
+def decode_record(item):
     with Image.open(item["path"]) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         image.load()
     width, height = image.size
     if width < 16 or height < 16 or width % 2 or height % 2:
         raise ValueError(f"HR dimensions must be even and >=16: {item['path']} {image.size}")
-    hr = np.asarray(image, dtype=np.uint8)
-    if resize_impl == "float_a-0.5":
-        lr = resize_bicubic(hr.astype(np.float32) / 255, height // 2, width // 2)
-    elif resize_impl == "pillow_u8":
-        lr = np.asarray(image.resize((width // 2, height // 2), Image.Resampling.BICUBIC), dtype=np.uint8)
-    else:
-        raise ValueError(f"unknown resize implementation: {resize_impl}")
-    lr_padded = np.pad(lr, ((4, 4), (4, 4), (0, 0)), mode="edge")
-    # A view avoids storing a second copy of the float32 LR frame.
-    lr = lr_padded[4:-4, 4:-4]
+    lr_image = image.resize((width // 2, height // 2), Image.Resampling.BICUBIC)
+    lr = np.asarray(lr_image, dtype=np.uint8)
     return item | {
-        "hr": hr,
+        "hr": np.asarray(image, dtype=np.uint8),
         "lr": lr,
-        "lr_padded": lr_padded,
+        "lr_padded": np.pad(lr, ((4, 4), (4, 4), (0, 0)), mode="edge"),
         "width": width,
         "height": height,
     }
 
 
-def base_patch(record, x, y, patch, resize_impl="float_a-0.5"):
-    # Four LR pixels cover bicubic support; training excludes two outer pixels.
-    if resize_impl == "float_a-0.5":
-        expanded = record["lr_padded"][y : y + patch + 8, x : x + patch + 8]
-        resized = resize_bicubic(expanded, 2 * (patch + 8), 2 * (patch + 8))
-        return resized[8 : 8 + 2 * patch, 8 : 8 + 2 * patch]
-    if resize_impl == "pillow_u8":
-        expanded = Image.fromarray(record["lr_padded"]).crop((x, y, x + patch + 8, y + patch + 8))
-        resized = expanded.resize((2 * (patch + 8), 2 * (patch + 8)), Image.Resampling.BICUBIC)
-        return np.asarray(resized, dtype=np.uint8)[8 : 8 + 2 * patch, 8 : 8 + 2 * patch]
-    raise ValueError(f"unknown resize implementation: {resize_impl}")
+def base_patch(record, x, y, patch):
+    # Four LR pixels cover Pillow bicubic support. Edge padding matches resize.
+    expanded = Image.fromarray(record["lr_padded"]).crop((x, y, x + patch + 8, y + patch + 8))
+    resized = expanded.resize((2 * (patch + 8), 2 * (patch + 8)), Image.Resampling.BICUBIC)
+    return np.asarray(resized, dtype=np.uint8)[8 : 8 + 2 * patch, 8 : 8 + 2 * patch]
 
 
-def make_base(record, resize_impl):
-    if resize_impl == "float_a-0.5":
-        return resize_bicubic(record["lr"], record["height"], record["width"])
-    if resize_impl == "pillow_u8":
-        return np.asarray(Image.fromarray(record["lr"]).resize((record["width"], record["height"]), Image.Resampling.BICUBIC), dtype=np.uint8)
-    raise ValueError(f"unknown resize implementation: {resize_impl}")
-
-
-def random_batch(records, rng, patch, batch_size, resize_impl="float_a-0.5"):
+def random_batch(records, rng, patch, batch_size):
     lrs, bases, targets = [], [], []
     for _ in range(batch_size):
         record = records[int(rng.integers(len(records)))]
@@ -251,30 +228,22 @@ def random_batch(records, rng, patch, batch_size, resize_impl="float_a-0.5"):
         y = int(rng.integers(2, max_y + 1))
         x = int(rng.integers(2, max_x + 1))
         lrs.append(lr[y : y + patch, x : x + patch])
-        bases.append(base_patch(record, x, y, patch, resize_impl))
+        bases.append(base_patch(record, x, y, patch))
         targets.append(record["hr"][2 * y : 2 * (y + patch), 2 * x : 2 * (x + patch)])
-    lr_batch = np.stack(lrs).astype(np.float32)
-    base_batch = np.stack(bases).astype(np.float32)
-    target_batch = np.stack(targets).astype(np.float32) / 255
-    if resize_impl == "pillow_u8":
-        lr_batch /= 255
-        base_batch /= 255
-    return lr_batch, base_batch, target_batch
+    return tuple(np.stack(values).astype(np.float32) / 255 for values in (lrs, bases, targets))
 
 
-def evaluate(model, records, label, resize_impl="float_a-0.5"):
+def evaluate(model, records, label):
     results = []
     for record in records:
-        base = make_base(record, resize_impl)
-        lr = record["lr"].astype(np.float32)[None]
-        base_float = base.astype(np.float32)[None]
-        if resize_impl == "pillow_u8":
-            lr /= 255
-            base_float /= 255
+        base_image = Image.fromarray(record["lr"]).resize((record["width"], record["height"]), Image.Resampling.BICUBIC)
+        base = np.asarray(base_image, dtype=np.uint8)
         if model is None:
-            prediction = base_float[0] * 255
+            prediction = base.astype(np.float32)
             elapsed = 0.0
         else:
+            lr = record["lr"].astype(np.float32)[None] / 255
+            base_float = base.astype(np.float32)[None] / 255
             started = time.perf_counter()
             prediction = model.predict(lr, base_float)[0] * 255
             elapsed = time.perf_counter() - started
@@ -308,23 +277,16 @@ def add_baseline_comparison(result, baseline):
     return result
 
 
-def make_sheets(records, model, out, resize_impl="float_a-0.5"):
+def make_sheets(records, model, out):
     for mode in ("full", "crop"):
         width, height = (320, 180) if mode == "full" else (256, 256)
         label_h = 24
         sheet = Image.new("RGB", (width * 3, (height + label_h) * len(records)), "white")
         draw = ImageDraw.Draw(sheet)
         for row, record in enumerate(records):
-            base = make_base(record, resize_impl)
-            lr = record["lr"].astype(np.float32)[None]
-            base_float = base.astype(np.float32)[None]
-            if resize_impl == "pillow_u8":
-                lr /= 255
-                base_float /= 255
-            prediction = model.predict(lr, base_float)[0]
-            base_display = np.clip(base_float[0] * 255 + 0.5, 0, 255).astype(np.uint8)
-            prediction_display = np.clip(prediction * 255 + 0.5, 0, 255).astype(np.uint8)
-            arrays = [base_display, prediction_display, record["hr"]]
+            base = np.asarray(Image.fromarray(record["lr"]).resize((record["width"], record["height"]), Image.Resampling.BICUBIC))
+            prediction = model.predict(record["lr"].astype(np.float32)[None] / 255, base.astype(np.float32)[None] / 255)[0]
+            arrays = [base, np.clip(prediction * 255, 0, 255).astype(np.uint8), record["hr"]]
             for column, (label, array) in enumerate(zip(("bicubic", "selected model", "HR"), arrays)):
                 image = Image.fromarray(array)
                 if mode == "full":
@@ -351,7 +313,6 @@ def main():
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--test-fraction", type=float, default=0.1)
     parser.add_argument("--min-frame-mad", type=float, default=0.5, help="near-duplicate luma threshold in 8-bit levels; 0 disables")
-    parser.add_argument("--resize-impl", choices=("float_a-0.5", "pillow_u8"), default="float_a-0.5")
     parser.add_argument("--scratch-lr", type=float, default=0.001)
     parser.add_argument("--finetune-lr", type=float, default=0.0002)
     args = parser.parse_args()
@@ -382,16 +343,12 @@ def main():
         train_desc, test_desc, split_method = assign_split(descriptors, args.test_fraction)
     if len(train_desc) < 4 or len(test_desc) < 2:
         raise RuntimeError(f"need at least 4 unique train and 2 unique test frames, got {len(train_desc)}/{len(test_desc)}")
-    train_records = [decode_record(item, args.resize_impl) for item in train_desc]
-    test_records = [decode_record(item, args.resize_impl) for item in test_desc]
+    train_records = [decode_record(item) for item in train_desc]
+    test_records = [decode_record(item) for item in test_desc]
     manifest = {
         "schema": "hgamey/doom-sr-data@1",
-        "resize_implementation": args.resize_impl,
-        "lr_generation": "continuous float32 a=-0.5 bicubic HR 0.5x, no uint8 quantization" if args.resize_impl == "float_a-0.5" else "Pillow bicubic HR 0.5x, RGB uint8",
-        "bicubic_baseline": "continuous float32 a=-0.5 bicubic LR 2x, no uint8 quantization" if args.resize_impl == "float_a-0.5" else "Pillow bicubic LR 2x, RGB uint8",
-        "intermediate_uint8_quantization": args.resize_impl == "pillow_u8",
-        "coordinate_mapping": "src=(dst+0.5)/scale-0.5" if args.resize_impl == "float_a-0.5" else "Pillow",
-        "boundary": "clamp-to-edge with normalized weights" if args.resize_impl == "float_a-0.5" else "Pillow resize",
+        "lr_generation": "Pillow bicubic HR 0.5x, RGB uint8",
+        "bicubic_baseline": "Pillow bicubic LR 2x, RGB uint8",
         "split_method": split_method,
         "train_pairs": len(train_records),
         "test_pairs": len(test_records),
@@ -405,7 +362,7 @@ def main():
     (out / "data-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"DATA_READY train={len(train_records)} test={len(test_records)} split={split_method}", flush=True)
 
-    baseline = evaluate(None, test_records, "bicubic", args.resize_impl)
+    baseline = evaluate(None, test_records, "bicubic")
     summary = {
         "schema": "hgamey/doom-numpy-sr-training@1",
         "experiment_commit": os.environ.get("PF_EXPERIMENT_COMMIT"),
@@ -420,8 +377,6 @@ def main():
         "train_pairs": len(train_records),
         "test_pairs": len(test_records),
         "split_method": split_method,
-        "resize_implementation": args.resize_impl,
-        "intermediate_uint8_quantization": args.resize_impl == "pillow_u8",
         "lr_is_hr_downsample": True,
         "baseline_bicubic": baseline,
         "variants": {},
@@ -431,7 +386,7 @@ def main():
     if args.pretrained:
         structure = json.loads(Path(args.pretrained_structure).read_text())
         pretrained = SmallSR.load(args.pretrained, structure)
-        result = evaluate(pretrained, test_records, "qrisp_pretrained", args.resize_impl)
+        result = evaluate(pretrained, test_records, "qrisp_pretrained")
         add_baseline_comparison(result, baseline)
         summary["variants"]["qrisp_pretrained"] = result
         summary["pretrained_sha256"] = sha256_file(args.pretrained)
@@ -451,7 +406,7 @@ def main():
         history = []
         train_started = time.perf_counter()
         for step in range(1, args.steps + 1):
-            loss = model.train_step(*random_batch(train_records, rng, args.patch, args.batch_size, args.resize_impl), optimizer)
+            loss = model.train_step(*random_batch(train_records, rng, args.patch, args.batch_size), optimizer)
             if not np.isfinite(loss):
                 raise RuntimeError(f"{name}: non-finite loss at {step}")
             history.append(loss)
@@ -470,7 +425,7 @@ def main():
         })
         (out / f"{name}-structure.json").write_text(json.dumps(structure, indent=2) + "\n")
         (out / f"{name}-training-history.json").write_text(json.dumps({"l1": history}, indent=2) + "\n")
-        result = evaluate(model, test_records, name, args.resize_impl)
+        result = evaluate(model, test_records, name)
         add_baseline_comparison(result, baseline)
         result["structure"] = structure
         summary["variants"][name] = result
@@ -506,7 +461,7 @@ def main():
     }
     (out / "selection.json").write_text(json.dumps(selection, indent=2) + "\n")
     summary["selected_variant"] = selected
-    make_sheets(test_records[:3], selected_model, out, args.resize_impl)
+    make_sheets(test_records[:3], selected_model, out)
     summary["wall_s"] = time.perf_counter() - started
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"SELECTED {selected}; DONE wall_s={summary['wall_s']:.2f}", flush=True)

@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from doom3_sr.train_doom import discover  # noqa: E402
-from doom3_sr.bicubic import resize_bicubic  # noqa: E402
 from qrisp_sr.numpy_sr import SmallSR  # noqa: E402
 from qrisp_sr.train_qrisp import metrics  # noqa: E402
 
@@ -226,7 +225,7 @@ def _decode_hr(descriptor):
     return image
 
 
-def _validate_predictions(model, test_sources, resolved, baseline, selected, checks, resize_impl):
+def _validate_predictions(model, test_sources, resolved, baseline, selected, checks):
     baseline_frames = _frame_map(baseline, "baseline_bicubic")
     selected_frames = _frame_map(selected, "selected variant")
     checked = []
@@ -240,24 +239,17 @@ def _validate_predictions(model, test_sources, resolved, baseline, selected, che
         if width < 16 or height < 16 or width % 2 or height % 2:
             checks.require("heldout_predictions", False, f"{relative}: invalid even HR dimensions")
         hr = np.asarray(image, dtype=np.uint8)
-        if resize_impl == "float_a-0.5":
-            lr = resize_bicubic(hr.astype(np.float32) / 255, height // 2, width // 2)
-            base = resize_bicubic(lr, height, width)
-            prediction = model.predict(lr[None], base[None])[0] * 255
-            baseline_prediction = base * 255
-        elif resize_impl == "pillow_u8":
-            lr = np.asarray(image.resize((width // 2, height // 2), Image.Resampling.BICUBIC), dtype=np.uint8)
-            base = np.asarray(Image.fromarray(lr).resize((width, height), Image.Resampling.BICUBIC), dtype=np.uint8)
-            prediction = model.predict(
-                lr.astype(np.float32)[None] / 255,
-                base.astype(np.float32)[None] / 255,
-            )[0] * 255
-            baseline_prediction = base
-        else:
-            checks.require("heldout_predictions", False, f"unknown resize implementation {resize_impl}")
+        lr_image = image.resize((width // 2, height // 2), Image.Resampling.BICUBIC)
+        lr = np.asarray(lr_image, dtype=np.uint8)
+        base_image = Image.fromarray(lr).resize((width, height), Image.Resampling.BICUBIC)
+        base = np.asarray(base_image, dtype=np.uint8)
+        prediction = model.predict(
+            lr.astype(np.float32)[None] / 255,
+            base.astype(np.float32)[None] / 255,
+        )[0] * 255
         recomputed = {
             "selected": metrics(prediction, hr),
-            "baseline_bicubic": metrics(baseline_prediction, hr),
+            "baseline_bicubic": metrics(base, hr),
         }
         stored = {
             "selected": selected_frames.get(relative),
@@ -314,16 +306,9 @@ def _validate(run, data, test_data, checks):
         f"delta={expected_delta}; recommendation={recommendation}",
     )
 
-    resize_impl = data_manifest.get("resize_implementation", "pillow_u8")
-    checks.require(
-        "resize_contract",
-        summary.get("resize_implementation", "pillow_u8") == resize_impl
-        and data_manifest.get("intermediate_uint8_quantization", True) == (resize_impl == "pillow_u8"),
-        f"implementation={resize_impl}; intermediate_uint8={resize_impl == 'pillow_u8'}",
-    )
     structure = _load_json(_run_path(run, selection["structure"]))
     model = SmallSR.load(_run_path(run, selection["model"]), structure)
-    _validate_predictions(model, test_sources, resolved, summary["baseline_bicubic"], selected, checks, resize_impl)
+    _validate_predictions(model, test_sources, resolved, summary["baseline_bicubic"], selected, checks)
 
 
 def validate(run, data, test_data, output):
