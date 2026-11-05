@@ -70,13 +70,14 @@ sh_ "sha256sum /data/local/tmp/doom_stage/doom3/base/demo00.pk4" | grep -q "$PK4
 sh_ "[ -f /data/local/tmp/doom_stage/state/base/script/weapon_base.script ] && sha256sum /data/local/tmp/doom_stage/state/base/script/weapon_base.script" | grep -q "$SCRIPT_SHA" || { echo "FATAL: script missing/mismatch"; exit 4; }
 # 落位: root 用 su (顺带修属主), 否则试 shell 直写 Android/data
 if sh_ "su -c true" >/dev/null 2>&1; then
-  sh_ "su -c 'mkdir -p /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 -type f -exec chmod 660 {} \;'" >/dev/null
+  sh_ "su -c 'mkdir -p /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/ && mkdir -p /data/media/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/media/0/Android/data/$PKG/files/diii4a/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001 /data/media/0/Android/data/$PKG/files/diii4a -type f -exec chmod 660 {} \;'"
   HOW=su
 else
-  sh_ "mkdir -p /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001 && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/" >/dev/null
+  sh_ "mkdir -p /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001 /storage/emulated/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/ && cp -r /data/local/tmp/doom_stage/doom3 /storage/emulated/0/Android/data/$PKG/files/diii4a/" >/dev/null
   HOW=shell
 fi
-sh_ "ls -la /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/base/demo00.pk4"
+# 落位核查必须 su (FUSE 下 shell 对 Android/data 一律 EACCES, 不代表文件不存在)
+sh_ "su -c 'ls -la /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/base/demo00.pk4 /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4; sha256sum /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/base/demo00.pk4'" || { echo "FATAL: pk4 not in place (su check failed)"; exit 9; }
 
 # 4) 启动 (冻结命令, fs_savepath 指自己的 state; com_showFPS 开着便于人看; logfile 2 留控制台日志)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
@@ -95,6 +96,17 @@ P=$(sh_ "pidof $PKG || true" | tr -d '\r')
 echo "GAME_PID=$P"
 [ -n "$P" ] || { echo "FATAL: game process not running after launch"; exit 6; }
 sh_ "dumpsys window | grep -i mCurrentFocus || true"
+
+# 4b) 进图门: 35s 后查加载器错误弹窗 (uiautomator 抓文本) 与 qconsole 进图行; 弹窗=立即失败并留证据
+sleep 35
+sh_ "uiautomator dump /data/local/tmp/doom_ui.xml" >/dev/null 2>&1 || true
+sh_ "cat /data/local/tmp/doom_ui.xml 2>/dev/null" > "$OUT/ui_dump.xml" 2>/dev/null || true
+if grep -qE '数据文件|没有被发现|not.*found|Game data' "$OUT/ui_dump.xml" 2>/dev/null; then
+  echo "FATAL: launcher error dialog detected:"; grep -oE 'text="[^"]{0,200}' "$OUT/ui_dump.xml" | head -8; exit 7
+fi
+sh_ "su -c 'grep -m2 -iE \"Mars City|-------- Start|map:\" $STATE/base/qconsole.log'" > "$OUT/mapcheck.txt" 2>/dev/null || true
+echo "MAPCHECK=$(tr '\n' ' ' < "$OUT/mapcheck.txt" | head -c 300)"
+[ -s "$OUT/mapcheck.txt" ] || { echo "WARN: no map-load line in qconsole yet"; }
 
 # 5) 确定性脚本化走动 + 原生截帧 (不逐帧操控: 固定节奏的划动序列)
 SZ=$(sh_ "wm size | sed -n 's/.*: *\([0-9]*\)x\([0-9]*\)$/\1 \2/p'" | tail -1)

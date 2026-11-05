@@ -51,7 +51,7 @@ PREF=/data/user/0/$PKG/shared_prefs/${PKG}_preferences.xml
 sh_ "su -c 'am force-stop $PKG; sleep 1; [ -f $PREF ] && sed \"/name=\\\"harm_load_local_engine_lib\\\"/d; /<\\/map>/i\\\\    <boolean name=\\\"harm_load_local_engine_lib\\\" value=\\\"true\\\" />\" $PREF > $PREF.p && chown \$(stat -c %u /data/data/$PKG):\$(stat -c %g /data/data/$PKG) $PREF.p && chmod 600 $PREF.p && mv $PREF.p $PREF && restorecon $PREF && grep -c harm_load_local_engine_lib $PREF'" || { echo "FATAL: pref edit failed"; exit 4; }
 
 # 3) 逐档启动: +exec 对应 cfg + com_showFPS; 稳定后测量窗内 SF latency + 截图
-CFG=native:sr_native.cfg off:sr_off.cfg on:sr_on.cfg
+CFG="native:sr_native.cfg off:sr_off.cfg on:sr_on.cfg"
 LAUNCH() { # LAUNCH <extra-cfg>
   sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
   CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set logfile 2 +set developer 1 +set com_showFPS 1 +set r_multiSamples 0 +set r_useShadowMapping 1 +set harm_r_renderToolsMultithread 1 +set harm_r_autoAspectRatio 1 +set r_screenFraction 100 +set r_maxFps 60 +set g_skill 1 +set com_allowConsole 1 +exec sr_keys.cfg +exec $1 +map game/demo_mars_city1"
