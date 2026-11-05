@@ -22,18 +22,20 @@ CACHE="${PF_GAME_CACHE:-/Users/mac/hgamey/phonefarm/_games/cache}"
 OUT="${PF_JOB_OUT:-$(pwd)/doom_out}/doom_raw_$(date +%Y%m%d-%H%M%S)-$SERIAL"
 mkdir -p "$OUT/frames"
 echo "OUT=$OUT FRAMES=$FRAMES SERIAL=$SERIAL"
-ABI=$(sh_ "getprop ro.product.cpu.abi" | tr -d '\r')
-echo "DEVICE_ABI=$ABI"
 
 if [ "${SERIAL#hdc:}" != "$SERIAL" ]; then TKEY="${SERIAL#hdc:}"
   sh_() { hdc -t "$TKEY" shell "$@" 2>&1 | tr -d '\r'; }
   push_() { hdc -t "$TKEY" file send "$1" "$2" 2>&1 | tail -1; }
-  inst_() { hdc -t "$TKEY" install "$1" 2>&1 | tail -2; }
+  pull_() { hdc -t "$TKEY" file recv "$1" "$2" 2>&1 | tail -1; }
+  inst_() { hdc -t "$TKEY" install -r "$1" 2>&1 | tail -2; }
 else
   sh_() { adb -s "$SERIAL" shell "$@" 2>&1 | tr -d '\r'; }
   push_() { adb -s "$SERIAL" push "$1" "$2" 2>&1 | tail -1; }
+  pull_() { adb -s "$SERIAL" pull "$1" "$2" 2>&1 | tail -1; }
   inst_() { adb -s "$SERIAL" install -r -g "$1" 2>&1 | tail -2; }
 fi
+ABI=$(sh_ "getprop ro.product.cpu.abi" | tr -d '\r')
+echo "OUT=$OUT FRAMES=$FRAMES SERIAL=$SERIAL DEVICE_ABI=$ABI"
 
 # 1) 宿主缓存按 sha 取三件素材
 APK="$CACHE/blobs/$APK_SHA"; PK4="$CACHE/blobs/$PK4_SHA"
@@ -52,7 +54,8 @@ echo "$INST_OUT" | grep -qi 'success' || { echo "FATAL: install failed"; exit 5;
 # 3) 目标目录; uid 用 dumpsys 解析 (pilot 10386 是那台机的值, 每机不同)
 BASE=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3
 STATE=/storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/state
-UID_=$(sh_ "dumpsys package $PKG | sed -n 's/^ *userId=//p'" | head -1 | tr -d ' ')
+UID_=$(sh_ "cmd package list packages -U 2>/dev/null | grep '$PKG' | sed 's/.*uid://' | tr -d ' '" | head -1)
+[ -n "$UID_" ] || UID_=$(sh_ "su -c 'stat -c %u /data/data/$PKG' 2>/dev/null" | head -1 | tr -d ' ')
 echo "APP_UID=$UID_"
 sh_ "rm -rf /data/local/tmp/doom_stage" >/dev/null
 sh_ "mkdir -p /data/local/tmp/doom_stage/doom3/base /data/local/tmp/doom_stage/state/base/script /data/local/tmp/doom_stage/state/base/demos"
@@ -109,7 +112,7 @@ while [ "$i" -le "$FRAMES" ]; do
   [ "${LOOK_ONLY:-0}" = "1" ] || sh_ "input swipe $LX $MY $LX $((MY - H / 6)) 500" >/dev/null
   sleep 0.4
   sh_ "screencap -p /data/local/tmp/doom_stage/f.png" >/dev/null
-  push_ /data/local/tmp/doom_stage/f.png "$OUT/frames/frame_$(printf %04d $i).png" >/dev/null
+  pull_ /data/local/tmp/doom_stage/f.png "$OUT/frames/frame_$(printf %04d $i).png" >/dev/null
   i=$((i + 1))
 done
 N=$(ls "$OUT/frames" | grep -c png || true)
@@ -123,9 +126,30 @@ MEM=$(sh_ "dumpsys meminfo $PKG | grep -m1 TOTAL" || true)
 echo "ALIVE_AFTER=$ALIVE"; echo "MEM=$MEM"
 head -c 400 "$OUT/qconsole_tail.txt" || true
 GLES=$(grep -m1 -iE 'OpenGL|GLES' "$OUT/qconsole_head.txt" "$OUT/qconsole_tail.txt" 2>/dev/null | head -1 || true)
-LIBMAP=$(sh_ "[ -n \"$ALIVE\" ] && cat /proc/$ALIVE/maps | grep -m1 libdoom3 || true" || true)
+LIBMAP=$(sh_ "su -c 'grep -m1 libdoom3 /proc/$ALIVE/maps' 2>/dev/null" || true)
 echo "GLES_LINE=$GLES"
 echo "LIBMAP_LINE=$LIBMAP"
+# 引擎诊断: qconsole 不在时抓 logcat 尾部与 savepath 递归列表
+[ -s "$OUT/qconsole_tail.txt" ] || {
+  sh_ "logcat -d -t 300 | grep -iE 'idTech|Q3E|doom|glimp' | tail -n 40" > "$OUT/logcat_doom.txt" 2>/dev/null || true
+  sh_ "ls -laR $STATE 2>/dev/null | head -n 30" > "$OUT/state_ls.txt" 2>/dev/null || true
+  echo "NO_QCONSOLE: see logcat_doom.txt state_ls.txt"
+}
+# 帧统计 (不目视): 唯一色数/亮度方差判菜单 vs 游戏
+python3 - "$OUT/frames" <<'PY' > "$OUT/frame_stats.txt" 2>&1 || true
+import glob, sys
+try:
+    from PIL import Image
+except ImportError:
+    print("PIL unavailable"); sys.exit(0)
+files = sorted(glob.glob(sys.argv[1] + "/frame_*.png"))[:5] + sorted(glob.glob(sys.argv[1] + "/frame_*.png"))[-5:]
+for f in files:
+    im = Image.open(f).convert("L").resize((128, 128))
+    px = list(im.getdata())
+    print(f.split("/")[-1], "uniq_luma=", len(set(px)), "mean=", round(sum(px)/len(px), 1),
+          "var=", round(sum((p-sum(px)/len(px))**2 for p in px)/len(px), 1))
+PY
+cat "$OUT/frame_stats.txt" 2>/dev/null | head -10 || true
 
 # 7) 清理: 停游戏 + 清后台 + 清设备临时
 sh_ "am force-stop $PKG" >/dev/null || true
