@@ -2,6 +2,8 @@
 # B 轨 Doom3 原始采集（E2E 第一段）：装 idTech4A++ + 推 demo 数据 + 固定脚本走动 + 原生分辨率截帧。
 #   用法: experiment doom/capture_raw.sh <serial> [KEY=VALUE]
 # KEY: FRAMES (目标帧数, 缺省 80) LOOK_ONLY=1 (只转视角不移动)
+#      LIB_SHA (可选: 缓存 blobs/<sha> 的 libdoom3.so, 放进 fs_basepath 目录并开 harm_load_local_engine_lib; 需 root)
+#      MSAA (缺省 0, 传 +set r_multiSamples)
 # 启动法 (2026-10-14 pilot 冻结命令, 不需要缺失的 .demo 种子):
 #   am start -W -S -n com.karin.idTech4Amm/com.n0n3m4.q3e.Q3EMain --es game doom3 \
 #     --es command 'game.arm +set fs_basepath <BASE> +set fs_savepath <STATE> … +map game/demo_mars_city1'
@@ -20,6 +22,8 @@ CACHE="${PF_GAME_CACHE:-/Users/mac/hgamey/phonefarm/_games/cache}"
 OUT="${PF_JOB_OUT:-$(pwd)/doom_out}/doom_raw_$(date +%Y%m%d-%H%M%S)-$SERIAL"
 mkdir -p "$OUT/frames"
 echo "OUT=$OUT FRAMES=$FRAMES SERIAL=$SERIAL"
+ABI=$(sh_ "getprop ro.product.cpu.abi" | tr -d '\r')
+echo "DEVICE_ABI=$ABI"
 
 if [ "${SERIAL#hdc:}" != "$SERIAL" ]; then TKEY="${SERIAL#hdc:}"
   sh_() { hdc -t "$TKEY" shell "$@" 2>&1 | tr -d '\r'; }
@@ -69,7 +73,15 @@ sh_ "ls -la /storage/emulated/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom
 
 # 4) 启动 (冻结命令, fs_savepath 指自己的 state; com_showFPS 开着便于人看; logfile 2 留控制台日志)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
-CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set logfile 2 +set developer 1 +set com_showFPS 1 +set r_useShadowMapping 1 +set harm_r_globalIllumination 1 +set harm_r_renderToolsMultithread 1 +set harm_r_autoAspectRatio 1 +set r_screenFraction 100 +set r_maxFps 60 +set g_skill 1 +set com_allowConsole 1 +map game/demo_mars_city1"
+CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set logfile 2 +set developer 1 +set com_showFPS 1 +set r_multiSamples ${MSAA:-0} +set r_useShadowMapping 1 +set harm_r_globalIllumination 1 +set harm_r_renderToolsMultithread 1 +set harm_r_autoAspectRatio 1 +set r_screenFraction 100 +set r_maxFps 60 +set g_skill 1 +set com_allowConsole 1 +map game/demo_mars_city1"
+# 放回准备: 可选本地引擎库 + 启动器开关 (pilot 4802feb59a1a 验证链: pref sed → cache/lib 复制加载)
+LIB_SHA="${LIB_SHA:-}"
+if [ -n "$LIB_SHA" ] && [ -f "$CACHE/blobs/$LIB_SHA" ] && sh_ "su -c true" >/dev/null 2>&1; then
+  push_ "$CACHE/blobs/$LIB_SHA" /data/local/tmp/doom_stage/doom3/libdoom3.so >/dev/null
+  sh_ "su -c 'cp /data/local/tmp/doom_stage/doom3/libdoom3.so /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so && chown $UID_:$UID_ /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so && chmod 660 /data/media/0/Android/data/$PKG/files/hgamey-doom-glm-001/doom3/libdoom3.so'" >/dev/null
+  PREF=/data/user/0/$PKG/shared_prefs/${PKG}_preferences.xml
+  sh_ "su -c '[ -f $PREF ] && sed \"/name=\\\"harm_load_local_engine_lib\\\"/d; /<\\/map>/i\\\\    <boolean name=\\\"harm_load_local_engine_lib\\\" value=\\\"true\\\" />\" $PREF > $PREF.p2 && chown $UID_:$UID_ $PREF.p2 && chmod 600 $PREF.p2 && mv $PREF.p2 $PREF && restorecon $PREF'" >/dev/null && echo "LOCAL_LIB_ARMED=$LIB_SHA"
+fi
 sh_ "am start -W -S -n $PKG/com.n0n3m4.q3e.Q3EMain --es game doom3 --es command \"$CMD\"" | tail -3
 sleep 25
 P=$(sh_ "pidof $PKG || true" | tr -d '\r')
@@ -100,10 +112,15 @@ echo "FRAMES_KEPT=$N"
 
 # 6) 依据: 引擎控制台日志尾部 + 进程存活
 sh_ "tail -n 40 $STATE/base/qconsole.log" > "$OUT/qconsole_tail.txt" 2>/dev/null || true
+sh_ "head -n 60 $STATE/base/qconsole.log" > "$OUT/qconsole_head.txt" 2>/dev/null || true
 ALIVE=$(sh_ "pidof $PKG || true" | tr -d '\r')
 MEM=$(sh_ "dumpsys meminfo $PKG | grep -m1 TOTAL" || true)
 echo "ALIVE_AFTER=$ALIVE"; echo "MEM=$MEM"
 head -c 400 "$OUT/qconsole_tail.txt" || true
+GLES=$(grep -m1 -iE 'OpenGL|GLES' "$OUT/qconsole_head.txt" "$OUT/qconsole_tail.txt" 2>/dev/null | head -1 || true)
+LIBMAP=$(sh_ "[ -n \"$ALIVE\" ] && cat /proc/$ALIVE/maps | grep -m1 libdoom3 || true" || true)
+echo "GLES_LINE=$GLES"
+echo "LIBMAP_LINE=$LIBMAP"
 
 # 7) 清理: 停游戏 + 清后台 + 清设备临时
 sh_ "am force-stop $PKG" >/dev/null || true
