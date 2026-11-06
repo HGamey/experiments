@@ -1,0 +1,71 @@
+"""How shell scripts reach the phone.
+
+LocalAdb  - the phone is attached to this machine (the normal case on the execution node).
+PfNodeAdb - the phone sits behind an HGamey node; every call is one `pf-node adb -s <serial> shell <script>` job,
+            routed with --device <node>/<device> and locked with --resource device:<serial>. Used when the agent
+            must run elsewhere (e.g. it needs credentials that must not be shipped to the node).
+
+Both expose sh(script, timeout) -> (stdout, rc) and pull(remote, local) -> bool.
+"""
+import os
+import shutil
+import subprocess
+
+
+def adb_bin():
+    for c in (shutil.which("adb"), "/opt/homebrew/bin/adb", os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")):
+        if c and os.path.exists(c):
+            return c
+    raise SystemExit("adb not found")
+
+
+def lock_fds():
+    """Lock fds handed down by `phonefarm lease`; children keep them so the device lock lives for the whole run."""
+    return tuple(int(fd) for fd in os.environ.get("PF_LOCK_FDS", "").split(",") if fd)
+
+
+class LocalAdb:
+    remote = False
+
+    def __init__(self, serial):
+        self.serial = serial
+        self.adb = adb_bin()
+
+    def _run(self, args, timeout):
+        p = subprocess.run([self.adb, "-s", self.serial, *args], capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, pass_fds=lock_fds(), errors="replace")
+        return p.stdout + (p.stderr if p.returncode else ""), p.returncode
+
+    def sh(self, script, timeout=60):
+        return self._run(["shell", script], timeout)
+
+    def pull(self, remote, local):
+        _, rc = self._run(["pull", remote, local], 60)
+        return rc == 0
+
+
+class PfNodeAdb:
+    remote = True
+
+    def __init__(self, serial, device_ref, pfnode, workdir, research=None):
+        self.serial, self.device_ref, self.pfnode = serial, device_ref, pfnode
+        self.workdir = workdir  # pf-node downloads each job's output dir here
+        self.research = research
+        self.jobs = []
+        os.makedirs(workdir, exist_ok=True)
+
+    def sh(self, script, timeout=120):
+        cmd = [self.pfnode, "--device", self.device_ref, "--resource", f"device:{self.serial}",
+               "--max-runtime-seconds", str(max(60, timeout))]
+        if self.research:
+            cmd += ["--research", self.research]
+        cmd += ["adb", "-s", self.serial, "shell", script]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 240, cwd=self.workdir,
+                           stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stderr.splitlines():
+            if "job=" in line and "提交已记录" in line:
+                self.jobs.append(line.split("job=")[1].split()[0])
+        return p.stdout, p.returncode
+
+    def pull(self, remote, local):
+        return False  # screenshots stay on the phone side in remote mode
