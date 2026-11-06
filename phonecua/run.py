@@ -103,6 +103,7 @@ def main():
     ap.add_argument("--remote", help="<node_id>/<device_id>: drive the phone through pf-node jobs")
     ap.add_argument("--pfnode", default="pf-node")
     ap.add_argument("--research")
+    ap.add_argument("--priority", type=int, default=0, help="remote mode: pf-node job priority for each step")
     ap.add_argument("--out", default=os.environ.get("PF_JOB_OUT") or "out")
     ap.add_argument("--phonefarm", default=os.environ.get("PHONEFARM_BIN") or os.path.join(os.environ.get("PF_ROOT", ""), "phonefarm"))
     a = ap.parse_args()
@@ -121,7 +122,7 @@ def main():
         logf.flush()
 
     if a.remote:
-        transport = PfNodeAdb(a.serial, a.remote, a.pfnode, os.path.join(out, "_pfnode"), a.research)
+        transport = PfNodeAdb(a.serial, a.remote, a.pfnode, os.path.join(out, "_pfnode"), a.research, a.priority)
     else:
         transport = LocalAdb(a.serial)
     env = PhoneEnv(transport, out_dir=out, log=log)

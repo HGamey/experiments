@@ -264,8 +264,9 @@ class PhoneEnv:
 
     def begin(self, setup_cmds=()):
         """Snapshot, run task setup, go home, observe. One round trip."""
-        self.seen_pkgs = set()
-        script = (f"mkdir -p {DEV_TMP}\ninput keyevent 224; wm dismiss-keyguard\n" + self.snapshot_script()
+        script = (f"mkdir -p {DEV_TMP}\necho @@CUA:PRE:BEGIN; dumpsys activity activities 2>/dev/null | "
+                  "grep -m1 topResumedActivity; echo @@CUA:PRE:END\n"
+                  "input keyevent 224; wm dismiss-keyguard\n" + self.snapshot_script()
                   + "echo @@CUA:SETUP:BEGIN\n" + "\n".join(setup_cmds) + "\necho @@CUA:SETUP:END\n"
                   + "input keyevent 3\nsleep 1.5\n" + self._obs_script())
         out = self.sh(script, timeout=180)
@@ -273,6 +274,9 @@ class PhoneEnv:
         if not snap["system"]:
             raise RuntimeError("snapshot failed: " + out[-400:])
         obs = self._parse_obs(out)
+        # whatever was in the foreground before the episode is not ours to kill at reset
+        self.initial_pkgs = set(re.findall(r"u0 ([\w.]+)/", split_marked(out, "PRE")))
+        self.seen_pkgs = {obs["pkg"]} if obs["pkg"] else set()
         return snap, split_marked(out, "SETUP").strip(), obs
 
     def restore_script(self, snap, now):
@@ -302,7 +306,8 @@ class PhoneEnv:
     def reset(self, snap, cleanup_cmds=(), packages=()):
         """Undo the episode: force-stop apps seen in foreground, run task cleanup, remove new cua_* files,
         restore every changed setting, go home. Returns a restore record (verified by a fresh snapshot)."""
-        pkgs = sorted((self.seen_pkgs | set(packages)) - {p for p in self.seen_pkgs if p.startswith(KEEP_RUNNING)})
+        pkgs = sorted((self.seen_pkgs | set(packages)) - {p for p in self.seen_pkgs if p.startswith(KEEP_RUNNING)}
+                      - (getattr(self, "initial_pkgs", set()) - set(packages)))
         pre = (["input keyevent 3"] + [f"am force-stop {p}" for p in pkgs] + list(cleanup_cmds)
                + [f"rm -rf {d}/cua_*" for d in SCRATCH_DIRS] + [f"rm -rf {DEV_TMP}"])
         # restore needs the current settings; read them in the same trip as cleanup, then a second trip writes back

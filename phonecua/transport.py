@@ -48,8 +48,9 @@ class LocalAdb:
 class PfNodeAdb:
     remote = True
 
-    def __init__(self, serial, device_ref, pfnode, workdir, research=None):
+    def __init__(self, serial, device_ref, pfnode, workdir, research=None, priority=0):
         self.serial, self.device_ref, self.pfnode = serial, device_ref, pfnode
+        self.priority = priority  # >0 lets the next step of a running episode go before other queued jobs
         self.workdir = workdir  # pf-node downloads each job's output dir here
         self.research = research
         self.jobs = []
@@ -60,9 +61,12 @@ class PfNodeAdb:
                "--max-runtime-seconds", str(max(60, timeout))]
         if self.research:
             cmd += ["--research", self.research]
+        if self.priority:
+            cmd += ["--priority", str(self.priority)]
         cmd += ["adb", "-s", self.serial, "shell", script]
         for attempt in range(3):
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 240, cwd=self.workdir,
+            # no client timeout: a step may wait in the queue while another job holds the phone
+            p = subprocess.run(cmd, capture_output=True, text=True, cwd=self.workdir,
                                stdin=subprocess.DEVNULL, errors="replace")
             job = None
             for line in p.stderr.splitlines():
@@ -76,8 +80,7 @@ class PfNodeAdb:
                 if not job or "@@CUA" in out:
                     break
                 time.sleep(5)
-                w = subprocess.run([self.pfnode, "wait", job], capture_output=True, text=True, timeout=timeout + 240,
-                                   cwd=self.workdir, stdin=subprocess.DEVNULL, errors="replace")
+                w = subprocess.run([self.pfnode, "wait", job], capture_output=True, text=True, cwd=self.workdir, stdin=subprocess.DEVNULL, errors="replace")
                 out, rc = w.stdout, w.returncode
             if job or "@@CUA" in out:
                 return out, rc
