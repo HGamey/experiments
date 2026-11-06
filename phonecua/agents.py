@@ -29,6 +29,17 @@ class OracleAgent:
         return a, None
 
 
+class NoopAgent:
+    """Finishes immediately: every checker must FAIL against it (guards against checkers that pass trivially)."""
+    name = "noop"
+
+    def reset(self, task, mode):
+        pass
+
+    def act(self, task, obs, history):
+        return {"action": "finish"}, None
+
+
 def load_env_file(path):
     d = {}
     with open(os.path.expanduser(path)) as f:

@@ -21,7 +21,7 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from agents import LLMAgent, OracleAgent  # noqa: E402
+from agents import LLMAgent, NoopAgent, OracleAgent  # noqa: E402
 from env import PhoneEnv, dump_json  # noqa: E402
 from tasks import TASKS  # noqa: E402
 from transport import LocalAdb, PfNodeAdb, lock_fds  # noqa: E402
@@ -93,7 +93,7 @@ def run_task(env, agent, task, mode, max_steps, out_dir, log):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("serial")
-    ap.add_argument("--agent", choices=["oracle", "llm"], default="oracle")
+    ap.add_argument("--agent", choices=["oracle", "noop", "llm"], default="oracle")
     ap.add_argument("--mode", choices=["gui", "hybrid"], default="hybrid")
     ap.add_argument("--tasks", default="", help="comma-separated task ids (default: all)")
     ap.add_argument("--repeat", type=int, default=1)
@@ -125,7 +125,7 @@ def main():
     else:
         transport = LocalAdb(a.serial)
     env = PhoneEnv(transport, out_dir=out, log=log)
-    agent = OracleAgent() if a.agent == "oracle" else LLMAgent(a.relay_env, a.model, log=log)
+    agent = {"oracle": OracleAgent, "noop": NoopAgent}[a.agent]() if a.agent != "llm" else LLMAgent(a.relay_env, a.model, log=log)
     ids = [t for t in a.tasks.split(",") if t]
     tasks = [t for t in TASKS if not ids or t["id"] in ids]
     log(f"agent={agent.name} mode={a.mode} serial={a.serial} remote={a.remote} tasks={len(tasks)} repeat={a.repeat}")
