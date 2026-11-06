@@ -54,6 +54,7 @@ WEIGHTS = {
 SYS_PROMPT = "MAGE_HYBRID_SYSTEM_PROMPT.txt"
 LLAMA_REPO = "ch686/llama.cpp-locateanything-magevl"  # Mage-VL support, upstream PR ggml-org/llama.cpp#26796
 LLAMA_COMMIT = "e07bdc8c8ef311561ab806e48792afb5d30b8054"
+LLAMA_TGZ_SHA256 = "7622731817e77fd3534fce7b14a15ca00cfa449d4ce1620a3bb9563f413e98d4"
 NDK_LINUX_URL = "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip"
 INSTRUCTION = "Open the Settings app and turn on Wi-Fi."
 
@@ -102,7 +103,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def fetch(urls, dest, log, want=None, tries=6):
+def fetch(urls, dest, log, want=None, tries=30):
     """Download with HTTP range resume; verify sha256 when given. Tries each mirror in turn."""
     if os.path.exists(dest) and (not want or sha256(dest) == want):
         return
@@ -161,16 +162,33 @@ def build_llama(cache, log, opencl=False):
         log(f"build cache hit {out}")
         return out
     ndk = find_ndk(cache, log)
-    src_tgz = os.path.join(cache, f"llama-{LLAMA_COMMIT[:12]}.tar.gz")
-    fetch([f"https://codeload.github.com/{LLAMA_REPO}/tar.gz/{LLAMA_COMMIT}"], src_tgz, log)
     src = os.path.join(cache, f"llama-src-{LLAMA_COMMIT[:12]}")
     if not os.path.isdir(src):
         tmp = src + ".tmp"
         shutil.rmtree(tmp, ignore_errors=True)
         os.makedirs(tmp)
-        with tarfile.open(src_tgz) as tf:
-            tf.extractall(tmp, filter="data")
-        top = os.path.join(tmp, os.listdir(tmp)[0])
+        src_tgz = os.path.join(cache, f"llama-{LLAMA_COMMIT[:12]}.tar.gz")
+        try:
+            fetch([f"https://codeload.github.com/{LLAMA_REPO}/tar.gz/{LLAMA_COMMIT}"], src_tgz, log, LLAMA_TGZ_SHA256, tries=10)
+            with tarfile.open(src_tgz) as tf:
+                tf.extractall(tmp, filter="data")
+            top = os.path.join(tmp, os.listdir(tmp)[0])
+        except Exception as ex:  # flaky codeload: fall back to a shallow git fetch of the pinned commit
+            log(f"tarball failed ({ex}); trying git fetch")
+            shutil.rmtree(tmp, ignore_errors=True)
+            top = os.path.join(tmp, "src")
+            os.makedirs(top)
+            git = lambda *x: subprocess.run(["git", "-C", top, *x], check=True, stdout=subprocess.DEVNULL)
+            git("init", "-q")
+            for i in range(5):
+                try:
+                    git("fetch", "-q", "--depth", "1", f"https://github.com/{LLAMA_REPO}.git", LLAMA_COMMIT)
+                    break
+                except subprocess.CalledProcessError:
+                    if i == 4:
+                        raise
+                    time.sleep(10)
+            git("checkout", "-q", LLAMA_COMMIT)
         os.replace(top, src)
         shutil.rmtree(tmp, ignore_errors=True)
     bdir = os.path.join(cache, f"llama-build-{key}")
