@@ -73,6 +73,14 @@ echo "STEP0_PACKAGE_PLACED" | tee -a "$OUT/steps.txt"
 # 1) 启动 GameLauncher 界面
 sh_ "am start -n $PKG/com.n0n3m4.DIII4A.GameLauncher" >/dev/null
 sleep 15
+# pm clear 后启动器可能弹更新/提示对话框, 先点掉 (确定/OK/允许), 最多 3 次
+for dlg in 1 2 3; do
+  dump_ dlg; DP=$(click_text_ dlg "确定")
+  [ "$DP" = "NONE" ] && DP=$(click_text_ dlg "OK")
+  [ "$DP" = "NONE" ] && break
+  sh_ "input tap $DP" >/dev/null; sleep 3
+  echo "DIALOG_DISMISSED=$DP" >> "$OUT/steps.txt"
+done
 dump_ launcher
 grep -c "node" "$OUT/ui_launcher.xml" >/dev/null 2>&1 && echo "LAUNCHER_DUMP_BYTES=$(wc -c < "$OUT/ui_launcher.xml")"
 FOCUS=$(sh_ "dumpsys window | grep -i mCurrentFocus"); echo "FOCUS=$FOCUS"
