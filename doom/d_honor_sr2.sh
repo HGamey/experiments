@@ -107,28 +107,36 @@ done
 sleep 1; dump_ t; TS=$(toggle_state_); echo "TOGGLE_STATE=$TS" | tee -a "$OUT/steps.txt"
 sh_ "screencap -p /data/local/tmp/settings2.png" >/dev/null
 adb -s "$SERIAL" pull /data/local/tmp/settings2.png "$OUT/settings_page.png" >/dev/null 2>&1 || true
-# 若未勾上: 再点该行右端(复选框通常在行右侧), 依次试右端/中心/右端偏内
+# 若未勾上: 找开关控件(行右侧独立 LinearLayout/Switch, x1 > 文字右缘), 点其中心
 if [ "$TS" != "CHECKED=true" ]; then
   dump_ nav
   RP=$(python3 - "$OUT/ui_nav.xml" <<'PY'
 import re, sys
 try: xml = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
 except Exception: print("NONE"); raise SystemExit
-best = None
-for m in re.finditer(r'<node[^>]*>', xml):
-    n = m.group(0)
-    if ("加载本地引擎库" in n or "Load local engine" in n):
+nodes = re.findall(r'<node[^>]*>', xml)
+tx = tb = None
+for i, n in enumerate(nodes):
+    if "加载本地引擎库" in n or "Load local engine" in n:
         b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
-        if b:
-            x1, y1, x2, y2 = map(int, b.groups())
-            best = f"{x2-50} {(y1+y2)//2} {x2} {y1} {y2}"
-print(best if best else "NONE")
+        if b: tx = list(map(int, b.groups())); tb = i
+        break
+if tx is None: print("NONE"); raise SystemExit
+for j in range(tb+1, min(len(nodes), tb+6)):
+    b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', nodes[j])
+    if not b: continue
+    x1, y1, x2, y2 = map(int, b.groups())
+    if x1 >= tx[2] - 20 and x2 > x1:  # 同行右侧的控件区
+        print(f"{(x1+x2)//2} {(y1+y2)//2}"); raise SystemExit
+print("NOSIB")
 PY
 )
-  echo "ROW_BOUNDS=$RP" | tee -a "$OUT/steps.txt"
-  if [ "$RP" != "NONE" ]; then
+  echo "SWITCH_POS=$RP" | tee -a "$OUT/steps.txt"
+  if [ "$RP" != "NONE" ] && [ "$RP" != "NOSIB" ]; then
     X=$(echo "$RP" | cut -d ' ' -f 1); Y=$(echo "$RP" | cut -d ' ' -f 2)
-    sh_ "input tap $X $Y" >/dev/null; sleep 2; dump_ t; TS=$(toggle_state_); echo "TOGGLE_RIGHT_STATE=$TS" | tee -a "$OUT/steps.txt"
+    sh_ "input tap $X $Y" >/dev/null; sleep 2; dump_ t; TS=$(toggle_state_); echo "TOGGLE_SWITCH_STATE=$TS" | tee -a "$OUT/steps.txt"
+    sh_ "screencap -p /data/local/tmp/settings4.png" >/dev/null
+    adb -s "$SERIAL" pull /data/local/tmp/settings4.png "$OUT/settings_switch_tapped.png" >/dev/null 2>&1 || true
   fi
   if [ "$TS" != "CHECKED=true" ]; then
     dump_ nav; POS=$(click_text_ nav "加载本地引擎库")
