@@ -121,8 +121,8 @@ class LLMAgent:
     def _chat(self, messages):
         body = json.dumps({"model": self.model, "messages": messages, "temperature": self.temperature,
                            "max_tokens": 1500}).encode()
-        last = None
-        for i in range(8):
+        last, quota_waits, i = None, 0, 0
+        while i < 8:  # i counts ordinary retries; quota waits and the temperature switch don't
             req = urllib.request.Request(self.url, data=body, headers={
                 "Authorization": f"Bearer {self.key}", "Content-Type": "application/json", "User-Agent": "curl/8.7.1"})
             t = time.time()
@@ -143,11 +143,16 @@ class LLMAgent:
                     body = json.dumps({**json.loads(body), "temperature": 1}).encode()
                     continue
                 last += " " + msg
+                if ex.code == 429 and "upstream keys are unavailable" in msg and quota_waits < 30:
+                    quota_waits += 1  # relay quota exhausted upstream: wait it out (up to 30 min) instead of failing
+                    time.sleep(60)
+                    continue
                 if ex.code not in (429, 500, 502, 503, 504, 529):
                     raise RuntimeError(last) from None
             except (urllib.error.URLError, TimeoutError, OSError) as ex:
                 last = f"{type(ex).__name__}: {ex}"
-            time.sleep(min(60, 5 * (i + 1)))
+            i += 1
+            time.sleep(min(60, 5 * i))
         raise RuntimeError(f"relay failed: {last}")
 
     def act(self, task, obs, history):
