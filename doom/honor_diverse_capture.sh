@@ -83,6 +83,9 @@ else
   sh_ "sha256sum /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 not in place (shell)"; exit 9; }
   echo "PRIVATE_DIR_SEEDED=shell"
 fi
+# 启动器预检(R4 adab881a914b 弹窗实测)要求数据在 /storage/emulated/0/diii4a/doom3;
+# 引擎实际读私有 Android/data(F40) -> 两处都铺同一份修复 pk4
+sh_ "mkdir -p /storage/emulated/0/diii4a && rm -rf /storage/emulated/0/diii4a/doom3 /storage/emulated/0/diii4a/state && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/diii4a/" && echo "PUBLIC_DIR_SEEDED=ok" || { echo "FATAL: public diii4a seed failed"; exit 10; }
 
 # 4) 启动: fps 显示关闭(human 要求), 无 logfile(F38), Q3EMain game+command
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
