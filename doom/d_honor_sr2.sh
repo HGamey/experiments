@@ -30,7 +30,7 @@ try: xml = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
 except Exception: print("UNKNOWN"); raise SystemExit
 nodes = re.findall(r'<node[^>]*>', xml)
 for i, n in enumerate(nodes):
-    if "加载本地引擎库" in n:
+    if "加载本地引擎库" in n or "Load local engine" in n:
         c = re.search(r'checked="(\w+)"', n)
         print("CHECKED=" + (c.group(1) if c else "attr_absent"))
         for m in nodes[max(0,i-3):i+3]:
@@ -50,9 +50,11 @@ dump_ launcher
 grep -c "node" "$OUT/ui_launcher.xml" >/dev/null 2>&1 && echo "LAUNCHER_DUMP_BYTES=$(wc -c < "$OUT/ui_launcher.xml")"
 FOCUS=$(sh_ "dumpsys window | grep -i mCurrentFocus"); echo "FOCUS=$FOCUS"
 echo "STEP1_LAUNCHER_STARTED" >> "$OUT/steps.txt"
-# 2) 导航: 菜单 → 其他 → 调试 → 游戏 → 勾选加载本地引擎库
+# 2) 导航: 溢出菜单(content-desc=更多选项) → 其他 → 调试 → 加载本地引擎库(中/英都匹配)
+dump_ nav; MPOS=$(click_text_ nav "更多选项")
+if [ "$MPOS" != "NONE" ]; then sh_ "input tap $MPOS" >/dev/null; sleep 2; echo "MENU_OPENED at $MPOS" >> "$OUT/steps.txt"; else sh_ "input keyevent 82" >/dev/null 2>&1 || true; sleep 2; fi
 nav_done=0
-for stepkw in "其他" "调试" "游戏" "加载本地引擎库"; do
+for stepkw in "其他" "调试" "加载本地引擎库" "Load local engine"; do
   dump_ nav
   POS=$(click_text_ nav "$stepkw")
   if [ "$POS" = "NONE" ]; then
@@ -64,7 +66,7 @@ for stepkw in "其他" "调试" "游戏" "加载本地引擎库"; do
   else
     sh_ "input tap $POS" >/dev/null; sleep 2
     echo "UI_HIT=$stepkw at $POS" | tee -a "$OUT/steps.txt"
-    [ "$stepkw" = "加载本地引擎库" ] && nav_done=1
+    case "$stepkw" in "加载本地引擎库"|"Load local engine") nav_done=1;; esac
   fi
 done
 sleep 1; dump_ t; TS=$(toggle_state_); echo "TOGGLE_STATE=$TS" | tee -a "$OUT/steps.txt"
