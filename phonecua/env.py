@@ -30,7 +30,7 @@ KEEP_RUNNING = ("com.hihonor.android.launcher", "com.android.systemui", "com.and
                 "com.sohu.inputmethod", "com.google.android.inputmethod", "android", "com.android.permissioncontroller")
 # Settings the system rewrites on its own; restoring them is pointless and can fight the OS.
 VOLATILE = re.compile(r"timestamp|_count$|^last_|_last_|elapsed|_ms$|^next_alarm_formatted$|^screen_brightness_float$|"
-                      r"^boot_count$|^ota_|^sysui_|^cloud_", re.I)
+                      r"^boot_count$|^ota_|^sysui_|^cloud_|^card_batch_no$", re.I)
 # Commands an agent may not run through shell{}: they would disturb the shared phone or touch personal data.
 SHELL_DENY = [
     (r"\breboot\b|\bsvc\s+power\b|\bsetprop\b", "rebooting / system properties"),

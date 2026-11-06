@@ -18,7 +18,7 @@ DL, DOC = "/sdcard/Download", "/sdcard/Documents"
 UI_TEXT = ("rm -f /data/local/tmp/cua/chk.xml; mkdir -p /data/local/tmp/cua; "
            "for i in 1 2 3; do uiautomator dump /data/local/tmp/cua/chk.xml >/dev/null 2>&1 && break; sleep 1; done; "
            "echo TOP=$(dumpsys activity activities | grep -m1 topResumedActivity); "
-           "cat /data/local/tmp/cua/chk.xml 2>/dev/null | tr '>' '\\n' | grep -o 'text=\"[^\"]*\"\\|content-desc=\"[^\"]*\"'")
+           "cat /data/local/tmp/cua/chk.xml 2>/dev/null | tr '>' '\\n' | grep -oE 'text=\"[^\"]*\"|content-desc=\"[^\"]*\"'")
 
 
 def eq(expected):
