@@ -10,6 +10,7 @@ Both expose sh(script, timeout) -> (stdout, rc) and pull(remote, local) -> bool.
 import os
 import shutil
 import subprocess
+import time
 
 
 def adb_bin():
@@ -60,12 +61,25 @@ class PfNodeAdb:
         if self.research:
             cmd += ["--research", self.research]
         cmd += ["adb", "-s", self.serial, "shell", script]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 240, cwd=self.workdir,
-                           stdin=subprocess.DEVNULL, errors="replace")
-        for line in p.stderr.splitlines():
-            if "job=" in line and "提交已记录" in line:
-                self.jobs.append(line.split("job=")[1].split()[0])
-        return p.stdout, p.returncode
-
-    def pull(self, remote, local):
-        return False  # screenshots stay on the phone side in remote mode
+        for attempt in range(3):
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 240, cwd=self.workdir,
+                               stdin=subprocess.DEVNULL, errors="replace")
+            job = None
+            for line in p.stderr.splitlines():
+                if "job=" in line and "提交已记录" in line:
+                    job = line.split("job=")[1].split()[0]
+            if job:
+                self.jobs.append(job)
+            out, rc = p.stdout, p.returncode
+            # the client can lose its connection while the job keeps running: re-attach instead of resubmitting
+            for _ in range(4):
+                if not job or "@@CUA" in out:
+                    break
+                time.sleep(5)
+                w = subprocess.run([self.pfnode, "wait", job], capture_output=True, text=True, timeout=timeout + 240,
+                                   cwd=self.workdir, stdin=subprocess.DEVNULL, errors="replace")
+                out, rc = w.stdout, w.returncode
+            if job or "@@CUA" in out:
+                return out, rc
+            time.sleep(10)  # not submitted at all: safe to retry
+        return out, rc
