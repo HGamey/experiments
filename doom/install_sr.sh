@@ -24,7 +24,7 @@ sh_() { adb -s "$SERIAL" shell "$@" 2>&1 | tr -d '\r'; }
 
 echo "OUT=$OUT SERIAL=$SERIAL ARMS=$ARMS"
 [ "$(sh_ "getprop ro.product.cpu.abi")" = arm64-v8a ] || { echo "FATAL: ABI not arm64-v8a"; exit 3; }
-sh_ "[ -f $BASE/base/demo00.pk4 ]" || { echo "FATAL: game data not deployed ($BASE)"; exit 3; }
+sh_ "su -c '[ -f /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4 ]'" || { echo "FATAL: game data not deployed ($BASE)"; exit 3; }
 sh_ "su -c true" >/dev/null 2>&1 || { echo "FATAL: root needed for pref edit"; exit 3; }
 
 CACHE="${CACHE:-/Users/mac/hgamey/phonefarm/_games/cache}"
