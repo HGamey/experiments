@@ -14,7 +14,8 @@ SR_REF="${SR_REF:-codex/doom3-realtime-sr}"
 SR_COMMIT="${SR_COMMIT:-65b00e2}"; [ ${#SR_COMMIT} -eq 40 ] || SR_COMMIT="65b00e29cb5c4be0184b3ba10e7ff5108d7040de"
 ARMS="${ARMS:-native,off,on}"
 WINDOW="${WINDOW:-20}"
-DATA=/storage/emulated/0/diii4a
+# F40: 引擎固定读应用私有默认路径, 命令行 fs_basepath/fs_savepath 不生效
+DATA=/storage/emulated/0/Android/data/$PKG/files/diii4a
 BASE=$DATA/doom3
 STATE=$DATA/state
 OUT="${PF_JOB_OUT:-$(pwd)/sr_out}/sr_install_$(date +%Y%m%d-%H%M%S)-$SERIAL"
