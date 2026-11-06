@@ -17,7 +17,7 @@ except Exception: print("NONE"); raise SystemExit
 best = None
 for m in re.finditer(r'<node[^>]*>', xml):
     n = m.group(0)
-    if sys.argv[2] in n and 'clickable="true"' in n:
+    if sys.argv[2] in n:
         b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
         if b:
             best = ((int(b.group(1))+int(b.group(3)))//2, (int(b.group(2))+int(b.group(4)))//2)
