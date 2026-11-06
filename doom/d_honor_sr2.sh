@@ -157,8 +157,6 @@ PY
     # 判定最终状态: 开关区右半亮度 left-right 差, 实测 OFF≈-6 ON≈-14 (阈值-10)
     ST=$(python3 - "$OUT/sw_b.png" 2>/dev/null <<'PY'
 import sys
-
-except Exception: print("UNKNOWN"); raise SystemExit
 try:
     from PIL import Image
     im = Image.open(sys.argv[1]).crop((916,1842,1084,2228)).resize((40,80))
