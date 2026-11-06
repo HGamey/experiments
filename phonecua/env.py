@@ -43,6 +43,8 @@ SHELL_DENY = [
     (r"\bstay_on_while_plugged_in\b|\bscreen_off_timeout\b.*\b0\b", "farm keep-alive settings"),
     (r"\bsvc\s+(wifi|data|usb)\b|\bairplane", "connectivity of the shared phone"),
     (r"\b(rm|mv)\b(?![^;&|]*\bcua_)", "rm/mv only on cua_* paths"),
+    (r"(>>?|\buiautomator\s+dump|\bscreencap(\s+-p)?|\bcp\b[^;&|]*|\btouch|\bmkdir(\s+-p)?)\s*(/sdcard|/storage)/(?![^\s;&|]*cua_)",
+     "writes on shared storage only to cua_* paths (use /data/local/tmp for scratch)"),
     (r"\bcontent\s+(insert|update|delete)\b|contacts|sms|mms|call_log|DCIM|Pictures|WeiXin|Tencent", "personal data"),
     (r"\bkill(all)?\b|\bpkill\b", "process killing"),
     (r"\bsu\b", "root"),
