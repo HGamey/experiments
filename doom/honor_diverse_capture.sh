@@ -65,10 +65,22 @@ mkdir -p "$OUT/zfix/script"; cp "$SCRIPT_SRC" "$OUT/zfix/script/weapon_base.scri
 FIXED_SHA=$(shasum -a 256 "$PK4F" | cut -d ' ' -f 1); echo "PK4_FIXED_SHA=$FIXED_SHA"
 push_ "$PK4F" /data/local/tmp/doom_stage/doom3/base/demo00.pk4 >/dev/null
 sh_ "sha256sum /data/local/tmp/doom_stage/doom3/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 sha mismatch on device"; exit 4; }
-# 清旧私有目录残留(R4 旧包会盖住修复), 重铺
-sh_ "su -c 'rm -rf /data/media/0/Android/data/$PKG/files/diii4a && mkdir -p /data/media/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/diii4a/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/diii4a && find /data/media/0/Android/data/$PKG/files/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/diii4a -type f -exec chmod 660 {} \;'"
-sh_ "su -c 'sha256sum /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4'" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 not in place"; exit 9; }
-echo "PRIVATE_DIR_SEEDED=ok"
+# 落位: 优先 su(记录旧文件名/SHA 后清残留, human 授权); su 不可用(F42 荣耀 su daemon refused)
+# 则 shell 直写 /storage/emulated/0/Android/data (荣耀实测 shell 有 FUSE 写权限)
+OLD_LIST="$OUT/old_private_ls.txt"
+sh_ "su -c 'ls -la /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/ 2>&1 | head -20'" > "$OLD_LIST" 2>/dev/null || true
+if sh_ "su -c true" >/dev/null 2>&1; then
+  sh_ "su -c 'rm -rf /data/media/0/Android/data/$PKG/files/diii4a && mkdir -p /data/media/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/diii4a/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/diii4a && find /data/media/0/Android/data/$PKG/files/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/diii4a -type f -exec chmod 660 {} \;'"
+  sh_ "su -c 'sha256sum /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4'" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 not in place (su)"; exit 9; }
+  echo "PRIVATE_DIR_SEEDED=su"
+else
+  echo "WARN: su unavailable, using shell FUSE write (old files list in old_private_ls.txt)"
+  sh_ "ls -la /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/ 2>&1 | head -20" >> "$OLD_LIST" || true
+  sh_ "rm -rf /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3 /storage/emulated/0/Android/data/$PKG/files/diii4a/state"
+  sh_ "mkdir -p /storage/emulated/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/Android/data/$PKG/files/diii4a/"
+  sh_ "sha256sum /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 not in place (shell)"; exit 9; }
+  echo "PRIVATE_DIR_SEEDED=shell"
+fi
 
 # 4) 启动: fps 显示关闭(human 要求), 无 logfile(F38), Q3EMain game+command
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
