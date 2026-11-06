@@ -77,12 +77,12 @@ class PfNodeAdb:
             out, rc = p.stdout, p.returncode
             # the client can lose its connection while the job keeps running: re-attach instead of resubmitting
             for _ in range(4):
-                if not job or "@@CUA" in out:
+                if not job or "@@CUA:DONE" in out:
                     break
                 time.sleep(5)
                 w = subprocess.run([self.pfnode, "wait", job], capture_output=True, text=True, cwd=self.workdir, stdin=subprocess.DEVNULL, errors="replace")
                 out, rc = w.stdout, w.returncode
-            if job or "@@CUA" in out:
+            if job or "@@CUA:DONE" in out:
                 return out, rc
             time.sleep(10)  # not submitted at all: safe to retry
         return out, rc

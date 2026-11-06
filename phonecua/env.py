@@ -134,8 +134,11 @@ class PhoneEnv:
 
     # ---------- device round trips ----------
     def sh(self, script, timeout=90):
-        out, rc = self.t.sh(script, timeout)
-        return out
+        """Run a device script; the trailing DONE marker tells a complete reply from a lost one."""
+        out, rc = self.t.sh(script + "\necho @@CUA:DONE\n", timeout)
+        if "@@CUA:DONE" not in out:
+            self.log(f"transport: reply incomplete (rc={rc}): {out[-200:]!r}")
+        return out.replace("@@CUA:DONE\n", "").replace("@@CUA:DONE", "")
 
     def _obs_script(self):
         shot = f"screencap -p {DEV_TMP}/shot.png" if self.shots else ""
