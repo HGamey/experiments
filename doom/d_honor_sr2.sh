@@ -43,6 +43,33 @@ PY
 }
 
 sh_ "am force-stop $PKG" >/dev/null || true; sh_ "am kill-all" >/dev/null 2>&1 || true
+# 0) 放正式包 (ea5d3a9, tar sha 3a2243f8...): R6/R7 pm clear 清掉了旧放置, 重放
+CACHE="${CACHE:-/Users/mac/hgamey/phonefarm/_games/cache}"
+W="$OUT/src"; mkdir -p "$W"
+TARBLOB=$(ls "$CACHE"/blobs/3a2243f8* "$CACHE"/blobs/ea5d3a9* 2>/dev/null | head -1)
+if [ -n "$TARBLOB" ]; then cp "$TARBLOB" "$OUT/small-sr.tar.gz"
+else
+  git clone --depth 1 -b codex/doom3-realtime-sr https://github.com/HGamey/experiments.git "$W/experiments" 2>&1 | tail -1 || true
+  T=$(find "$W/experiments" -name "small-sr-doom-arm64.tar.gz" 2>/dev/null | head -1)
+  [ -n "$T" ] && cp "$T" "$OUT/small-sr.tar.gz"
+fi
+[ -f "$OUT/small-sr.tar.gz" ] || { echo "FATAL: tar missing"; exit 3; }
+echo "TAR_SHA=$(shasum -a 256 "$OUT/small-sr.tar.gz" | cut -d ' ' -f 1)"
+tar xzf "$OUT/small-sr.tar.gz" -C "$W"
+SO=$(find "$W" -name libdoom3.so | head -1); [ -n "$SO" ] || { echo "FATAL: no libdoom3.so"; exit 3; }
+echo "SO_SHA=$(shasum -a 256 "$SO" | cut -c1-16)"
+find "$W" -type f -exec shasum -a 256 {} \; | sed 's#.*/##' > "$OUT/pkg_files.txt"
+grep -c "^6cc44b53" "$OUT/pkg_files.txt" >/dev/null && echo "WEIGHTS_6cc44b53_PRESENT=yes" || echo "WEIGHTS_6cc44b53_PRESENT=check_pkg_files"
+adb -s "$SERIAL" push "$SO" /data/local/tmp/libdoom3.so >/dev/null
+for ROOT2 in /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3 /storage/emulated/0/diii4a/doom3; do
+  sh_ "cp /data/local/tmp/libdoom3.so $ROOT2/libdoom3.so && chmod 664 $ROOT2/libdoom3.so && ls -la $ROOT2/libdoom3.so" || echo "WARN: place fail $ROOT2"
+done
+put_cfg() { printf '%s' "$2" | base64 -d > "$OUT/$1"; adb -s "$SERIAL" push "$OUT/$1" "/data/local/tmp/$1" >/dev/null; for R3 in /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base /storage/emulated/0/diii4a/doom3/base; do sh_ "cp /data/local/tmp/$1 $R3/$1 && chmod 664 $R3/$1"; done; }
+put_cfg sr_keys.cfg "YmluZCBGOCAidG9nZ2xlIHJfc21hbGxTUiAxIDIiCmJpbmQgRjkgImV4ZWMgc3JfbmF0aXZlLmNmZyIKZWNobyAiRjg6IGJpY3ViaWMvbW9kZWw7IEY5OiBuYXRpdmUiCg=="
+put_cfg sr_native.cfg "c2V0IHJfc21hbGxTUiAwCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtYWxsU1IgbmF0aXZlIGZ1bGwtcmVzb2x1dGlvbiByZWZlcmVuY2UiCg=="
+put_cfg sr_off.cfg "c2V0IHJfc21hbGxTUiAxCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtYWxsU1IgT0ZGOiBzYW1lIGhhbGYtc2l6ZSByZW5kZXIgKyBiaWN1YmljIgo="
+put_cfg sr_on.cfg "c2V0IHJfc21hbGxTUiAyCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtYWxsU1IgT046IGhhbGYtc2l6ZSByZW5kZXIgKyBtb2RlbCIK"
+echo "STEP0_PACKAGE_PLACED" | tee -a "$OUT/steps.txt"
 # 1) 启动 GameLauncher 界面
 sh_ "am start -n $PKG/com.n0n3m4.DIII4A.GameLauncher" >/dev/null
 sleep 15
