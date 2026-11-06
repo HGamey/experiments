@@ -225,7 +225,8 @@ def _decode_hr(descriptor):
     return image
 
 
-def _validate_predictions(model, test_sources, resolved, baseline, selected, checks):
+def _validate_predictions(model, test_sources, resolved, baseline, selected, checks, crop=(0, 0, 0, 0)):
+    from train_doom import crop_box
     baseline_frames = _frame_map(baseline, "baseline_bicubic")
     selected_frames = _frame_map(selected, "selected variant")
     checked = []
@@ -233,6 +234,8 @@ def _validate_predictions(model, test_sources, resolved, baseline, selected, che
         relative = source["relative_path"]
         descriptor = resolved[("test", relative)]
         image = _decode_hr(descriptor)
+        if any(crop):
+            image = image.crop(crop_box(*image.size, crop))
         width, height = image.size
         if [width, height] != [source["width"], source["height"]]:
             checks.require("heldout_predictions", False, f"{relative}: HR dimensions differ")
@@ -274,7 +277,7 @@ def _validate_predictions(model, test_sources, resolved, baseline, selected, che
                    f"independently recomputed selected and bicubic metrics for {len(checked)} frames")
 
 
-def _validate(run, data, test_data, checks):
+def _validate(run, data, test_data, checks, crop=(0, 0, 0, 0)):
     required = [run / name for name in ("summary.json", "data-manifest.json", "selection.json")]
     missing = [path.name for path in required if not path.is_file()]
     checks.require("required_files", not missing,
@@ -308,15 +311,15 @@ def _validate(run, data, test_data, checks):
 
     structure = _load_json(_run_path(run, selection["structure"]))
     model = SmallSR.load(_run_path(run, selection["model"]), structure)
-    _validate_predictions(model, test_sources, resolved, summary["baseline_bicubic"], selected, checks)
+    _validate_predictions(model, test_sources, resolved, summary["baseline_bicubic"], selected, checks, crop)
 
 
-def validate(run, data, test_data, output):
+def validate(run, data, test_data, output, crop=(0, 0, 0, 0)):
     """Validate a run, write the report, and return it without raising on mismatch."""
     run = Path(run)
     checks = Checks()
     try:
-        _validate(run, Path(data), Path(test_data) if test_data else None, checks)
+        _validate(run, Path(data), Path(test_data) if test_data else None, checks, crop)
     except ValidationError:
         pass
     except Exception as error:  # Convert corrupt downloads into a clear JSON failure.
@@ -338,9 +341,13 @@ def main(argv=None):
     parser.add_argument("--run", required=True, help="downloaded formal training run directory")
     parser.add_argument("--data", required=True, help="original training HR directory or manifest")
     parser.add_argument("--test-data", help="original held-out HR directory or manifest")
+    parser.add_argument("--crop-top", type=int, default=0, help="HR pixels removed from top during training")
+    parser.add_argument("--crop-bottom", type=int, default=0)
+    parser.add_argument("--crop-left", type=int, default=0)
+    parser.add_argument("--crop-right", type=int, default=0)
     parser.add_argument("--output", required=True, help="validation report JSON")
     args = parser.parse_args(argv)
-    report = validate(args.run, args.data, args.test_data, args.output)
+    report = validate(args.run, args.data, args.test_data, args.output, (args.crop_top, args.crop_bottom, args.crop_left, args.crop_right))
     if report["valid"]:
         print(f"VALID {args.run}; report: {args.output}")
         return 0
