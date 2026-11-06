@@ -19,6 +19,8 @@ mkdir -p "$OUT/frames_raw" "$OUT/frames"
 echo "OUT=$OUT FRAMES=$FRAMES SERIAL=$SERIAL"
 
 sh_() { adb -s "$SERIAL" shell "$@" 2>&1 | tr -d '\r'; }
+SZ=$(sh_ "wm size | sed -n 's/.*: *\([0-9]*\)x\([0-9]*\)$/\1 \2/p'" | tail -1)
+W=${SZ% *}; H=${SZ#* }
 push_() { adb -s "$SERIAL" push "$1" "$2" 2>&1 | tail -1; }
 pull_() { adb -s "$SERIAL" pull "$1" "$2" 2>&1 | tail -1; }
 
@@ -26,11 +28,25 @@ pull_() { adb -s "$SERIAL" pull "$1" "$2" 2>&1 | tail -1; }
 APK="$CACHE/blobs/$APK_SHA"; PK4="$CACHE/blobs/$PK4_SHA"; SCRIPT_SRC="$CACHE/blobs/$SCRIPT_SHA"
 [ -f "$APK" ] && [ -f "$PK4" ] && [ -f "$SCRIPT_SRC" ] || { echo "FATAL: cache blobs missing"; exit 3; }
 
-# 2) 安装
+# 2) 安装: 荣耀 adb install -r 会弹 USB 安装确认框导致永久卡死(F41); v73 已装则直接复用
 sh_ "am kill-all" >/dev/null || true
 APKF="$OUT/idtech4amm-v73-arm64.apk"; cp "$APK" "$APKF"
-INST_OUT=$(adb -s "$SERIAL" install -r -g "$APKF" 2>&1 | tail -2); echo "INSTALL: $INST_OUT"
-echo "$INST_OUT" | grep -qi success || { echo "FATAL: install failed"; exit 5; }
+HAVE=$(sh_ "pm path $PKG 2>/dev/null | head -1")
+if [ -n "$HAVE" ]; then
+  echo "REUSE_INSTALLED: $HAVE"
+else
+  adb -s "$SERIAL" install -r -g "$APKF" > "$OUT/install.log" 2>&1 &
+  IPID=$!
+  # 300s 内每 10s 点一次『继续』解确认框, 超时杀掉
+  for t in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    sleep 10; kill -0 $IPID 2>/dev/null || break
+    sh_ "uiautomator dump /data/local/tmp/doom_ui.xml >/dev/null 2>&1; grep -q '继续' /data/local/tmp/doom_ui.xml && input tap $((W * 62 / 100)) $((H * 62 / 100)) || true" >/dev/null
+  done
+  kill -0 $IPID 2>/dev/null && { kill $IPID; echo "FATAL: install stuck >300s"; exit 5; }
+  wait $IPID || true
+  INST_OUT=$(tail -2 "$OUT/install.log"); echo "INSTALL: $INST_OUT"
+  echo "$INST_OUT" | grep -qi success || { echo "FATAL: install failed"; exit 5; }
+fi
 
 # 3) patch pk4 (单一 weapon_base.script 成员 = 2662B override)
 BASE=/storage/emulated/0/Android/data/$PKG/files/diii4a/doom3
