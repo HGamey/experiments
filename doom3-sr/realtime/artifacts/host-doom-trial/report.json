@@ -1,0 +1,53 @@
+{
+  "archive_sha256": "3a2243f84e20c6e7358a7adf627567ee633c1611bc14055bed6f9a9448dd6b8f",
+  "source_sha256": "cb794e4d170a9a90a96aa2bd77d571c34483d7315810ee64bd9934ccf6e43d28",
+  "source": "C trial 3aa25dd077c5/test-crop-contact.jpg, first row HR, frame_0124",
+  "source_crop_xyxy": [
+    512,
+    24,
+    768,
+    280
+  ],
+  "hr_size": [
+    256,
+    256
+  ],
+  "lr_size": [
+    128,
+    128
+  ],
+  "zoom_xyxy": [
+    72,
+    40,
+    200,
+    168
+  ],
+  "zoom_scale": 4,
+  "zoom_filter": "nearest",
+  "input_method": "Pillow RGB8 bicubic downsample of the JPEG HR crop",
+  "scope": "Host postprocess only; not a live game render or phone FPS measurement",
+  "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+  "gles_version": "OpenGL ES 3.2 NVIDIA 580.173.02",
+  "weights_sha256": "6cc44b53ab9d6701617c48a24515a49ac20ca7e7417bcb3c7d5d02570f1d60e5",
+  "engine_source_sha256": "9699413ed1f1c9ae00969cce6b4d30ed119750fdd0668146cbc89f4c7be51ab1",
+  "checks": {
+    "native_equals_source": true,
+    "bicubic_equals_pillow": true,
+    "model_max_error_vs_numpy": 0.0022776424884796143,
+    "model_mean_error_vs_numpy": 0.0006172438152134418
+  },
+  "crop_psnr_db": {
+    "bicubic": 37.340353539050405,
+    "model": 38.76685037590512
+  },
+  "files": {
+    "input-half.png": "ef9fa7406ad92cb3cfb956e01611ed3423bc9278595a190fcee834c928559232",
+    "mode-0-native.png": "0eb766367cf068cb66b33b00fd499f0e1a1a7894b7dc90f86c336c8cf675eac8",
+    "mode-1-bicubic.png": "dc78999f5bdc9004fead259f0f79122ccdd696650ebc16596b83eecffdaab1bb",
+    "mode-2-model.png": "e1adb6b9b1bbae3ac0605de24f4cef21a25bc8fb5d564092cc5b2d5c088671cf",
+    "source-contact.jpg": "cb794e4d170a9a90a96aa2bd77d571c34483d7315810ee64bd9934ccf6e43d28",
+    "source-hr-crop.png": "0eb766367cf068cb66b33b00fd499f0e1a1a7894b7dc90f86c336c8cf675eac8",
+    "three-modes.png": "45e4a1f3f30bf5c5ec5872a483708d6a63699c9b967cc93b377a94c970a6a2b6",
+    "zoom-three-modes.png": "12602d3c4226407d840c0ff5acd48acbece763f6bfde814e70f840631274b3b9"
+  }
+}
