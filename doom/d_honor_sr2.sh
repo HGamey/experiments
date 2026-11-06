@@ -154,11 +154,47 @@ except Exception: print("?")
 PY
 )
     echo "TOGGLE_PIXEL_DIFF=$DIFF (>0 = 开关已切换)" | tee -a "$OUT/steps.txt"
+    # 判定最终状态: 开关区右半亮度 left-right 差, 实测 OFF≈-6 ON≈-14 (阈值-10)
+    ST=$(python3 - "$OUT/sw_b.png" 2>/dev/null <<'PY'
+import sys
+
+except Exception: print("UNKNOWN"); raise SystemExit
+try:
+    from PIL import Image
+    im = Image.open(sys.argv[1]).crop((916,1842,1084,2228)).resize((40,80))
+except Exception: print("UNKNOWN"); raise SystemExit
+w,h=im.size
+L=im.crop((0,0,w//2,h)).convert("L"); R=im.crop((w//2,0,w,h)).convert("L")
+def m(img): px=list(img.getdata()); return sum(px)/len(px)
+print("ON" if m(R)-m(L) < -10 else "OFF")
+PY
+)
+    echo "TOGGLE_FINAL_STATE=$ST" | tee -a "$OUT/steps.txt"
+    if [ "$ST" = "OFF" ]; then
+      sh_ "input tap $X $Y" >/dev/null; sleep 2
+      sh_ "screencap -p /data/local/tmp/sw_c.png" >/dev/null
+      adb -s "$SERIAL" pull /data/local/tmp/sw_c.png "$OUT/sw_c.png" >/dev/null 2>&1 || true
+      ST=$(python3 - "$OUT/sw_c.png" 2>/dev/null <<'PY'
+import sys
+try:
+    from PIL import Image
+    im = Image.open(sys.argv[1]).crop((916,1842,1084,2228)).resize((40,80))
+except Exception: print("UNKNOWN"); raise SystemExit
+w,h=im.size
+L=im.crop((0,0,w//2,h)).convert("L"); R=im.crop((w//2,0,w,h)).convert("L")
+def m(img): px=list(img.getdata()); return sum(px)/len(px)
+print("ON" if m(R)-m(L) < -10 else "OFF")
+PY
+)
+      echo "TOGGLE_FINAL_STATE_RETRY=$ST" | tee -a "$OUT/steps.txt"
+    fi
     sh_ "screencap -p /data/local/tmp/settings3.png" >/dev/null
     adb -s "$SERIAL" pull /data/local/tmp/settings3.png "$OUT/settings_page_after_tap.png" >/dev/null 2>&1 || true
   fi
 fi
+sleep 10  # apply() 异步写 prefs, 立刻 force-stop 会丢(疑点); 等落盘再退
 sh_ "input keyevent 4" >/dev/null 2>&1 || true; sh_ "input keyevent 4" >/dev/null 2>&1 || true
+sleep 3
 sh_ "am force-stop $PKG" >/dev/null; sleep 2
 echo "STEP2_UI_DONE nav_done=$nav_done" | tee -a "$OUT/steps.txt"
 
