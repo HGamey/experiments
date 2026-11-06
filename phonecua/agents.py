@@ -122,7 +122,7 @@ class LLMAgent:
         body = json.dumps({"model": self.model, "messages": messages, "temperature": self.temperature,
                            "max_tokens": 1500}).encode()
         last = None
-        for i in range(4):
+        for i in range(8):
             req = urllib.request.Request(self.url, data=body, headers={
                 "Authorization": f"Bearer {self.key}", "Content-Type": "application/json", "User-Agent": "curl/8.7.1"})
             t = time.time()
@@ -147,7 +147,7 @@ class LLMAgent:
                     raise RuntimeError(last) from None
             except (urllib.error.URLError, TimeoutError, OSError) as ex:
                 last = f"{type(ex).__name__}: {ex}"
-            time.sleep(5 * (i + 1))
+            time.sleep(min(60, 5 * (i + 1)))
         raise RuntimeError(f"relay failed: {last}")
 
     def act(self, task, obs, history):
