@@ -55,7 +55,7 @@ class PfNodeAdb:
         os.makedirs(workdir, exist_ok=True)
 
     def sh(self, script, timeout=120):
-        cmd = [self.pfnode, "--device", self.device_ref, "--resource", f"device:{self.serial}",
+        cmd = [self.pfnode, "--device", self.device_ref, "--device-access", "write", "--resource", f"device:{self.serial}",
                "--max-runtime-seconds", str(max(60, timeout))]
         if self.research:
             cmd += ["--research", self.research]
