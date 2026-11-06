@@ -70,6 +70,16 @@ put_cfg sr_native.cfg "c2V0IHJfc21hbGxTUiAwCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtY
 put_cfg sr_off.cfg "c2V0IHJfc21hbGxTUiAxCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtYWxsU1IgT0ZGOiBzYW1lIGhhbGYtc2l6ZSByZW5kZXIgKyBiaWN1YmljIgo="
 put_cfg sr_on.cfg "c2V0IHJfc21hbGxTUiAyCnNldCBjb21fc2hvd0ZQUyAxCmVjaG8gIlNtYWxsU1IgT046IGhhbGYtc2l6ZSByZW5kZXIgKyBtb2RlbCIK"
 echo "STEP0_PACKAGE_PLACED" | tee -a "$OUT/steps.txt"
+# 0b) 外部动态库目录路径也补放: <游戏运行目录>/lib/arm64/libdoom3.so (设置页「使用外部动态库目录」语义)
+for R4 in /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3 /storage/emulated/0/diii4a/doom3; do
+  sh_ "mkdir -p $R4/lib/arm64 && cp /data/local/tmp/libdoom3.so $R4/lib/arm64/libdoom3.so && chmod 664 $R4/lib/arm64/libdoom3.so"
+done
+echo "STEP0B_LIB_ARM64_PLACED" | tee -a "$OUT/steps.txt"
+# 0b) 外部动态库目录路径也补放: <游戏运行目录>/lib/arm64/libdoom3.so (设置页「使用外部动态库目录」语义)
+for R4 in /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3 /storage/emulated/0/diii4a/doom3; do
+  sh_ "mkdir -p $R4/lib/arm64 && cp /data/local/tmp/libdoom3.so $R4/lib/arm64/libdoom3.so && chmod 664 $R4/lib/arm64/libdoom3.so"
+done
+echo "STEP0B_LIB_ARM64_PLACED" | tee -a "$OUT/steps.txt"
 # 1) 启动 GameLauncher 界面
 sh_ "am start -n $PKG/com.n0n3m4.DIII4A.GameLauncher" >/dev/null
 sleep 15
@@ -89,7 +99,7 @@ echo "STEP1_LAUNCHER_STARTED" >> "$OUT/steps.txt"
 dump_ nav; MPOS=$(click_text_ nav "更多选项")
 if [ "$MPOS" != "NONE" ]; then sh_ "input tap $MPOS" >/dev/null; sleep 2; echo "MENU_OPENED at $MPOS" >> "$OUT/steps.txt"; else sh_ "input keyevent 82" >/dev/null 2>&1 || true; sleep 2; fi
 nav_done=0
-for stepkw in "其他" "调试" "加载本地引擎库" "Load local engine"; do
+for stepkw in "其他" "调试" "加载本地引擎库" "Load local engine" "使用外部动态库目录"; do
   dump_ nav
   POS=$(click_text_ nav "$stepkw")
   if [ "$POS" = "NONE" ]; then
@@ -101,6 +111,7 @@ for stepkw in "其他" "调试" "加载本地引擎库" "Load local engine"; do
   else
     case "$stepkw" in
       "加载本地引擎库"|"Load local engine") echo "UI_FOUND=$stepkw at $POS (不点文字, 开关由后续步骤点)" | tee -a "$OUT/steps.txt"; nav_done=1;;
+      "使用外部动态库目录") echo "UI_FOUND=$stepkw at $POS (不点文字, 开关由后续步骤点)" | tee -a "$OUT/steps.txt";;
       *) sh_ "input tap $POS" >/dev/null; sleep 2; echo "UI_HIT=$stepkw at $POS" | tee -a "$OUT/steps.txt";;
     esac
   fi
@@ -189,6 +200,51 @@ PY
     sh_ "screencap -p /data/local/tmp/settings3.png" >/dev/null
     adb -s "$SERIAL" pull /data/local/tmp/settings3.png "$OUT/settings_page_after_tap.png" >/dev/null 2>&1 || true
   fi
+fi
+
+# 0c) 第二个开关: 使用外部动态库目录 (同款定位+点击+像素验证)
+dump_ nav
+SW2=$(python3 - "$OUT/ui_nav.xml" <<'PY'
+import re, sys
+try: xml = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
+except Exception: print("NONE"); raise SystemExit
+nodes = re.findall(r'<node[^>]*>', xml)
+tx = tb = None
+for i, n in enumerate(nodes):
+    if "使用外部动态库目录" in n:
+        b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
+        if b: tx = list(map(int, b.groups())); tb = i
+        break
+if tx is None: print("NONE"); raise SystemExit
+for j in range(tb+1, min(len(nodes), tb+6)):
+    b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', nodes[j])
+    if not b: continue
+    x1, y1, x2, y2 = map(int, b.groups())
+    if x1 >= tx[2] - 20 and x2 > x1:
+        print(f"{(x1+x2)//2} {(y1+y2)//2}"); raise SystemExit
+print("NOSIB")
+PY
+)
+echo "SWITCH2_POS=$SW2" | tee -a "$OUT/steps.txt"
+if [ "$SW2" != "NONE" ] && [ "$SW2" != "NOSIB" ]; then
+  X2=$(echo "$SW2" | cut -d ' ' -f 1); Y2=$(echo "$SW2" | cut -d ' ' -f 2)
+  sh_ "screencap -p /data/local/tmp/s2_a.png" >/dev/null
+  sh_ "input tap $X2 $Y2" >/dev/null; sleep 2
+  sh_ "screencap -p /data/local/tmp/s2_b.png" >/dev/null
+  adb -s "$SERIAL" pull /data/local/tmp/s2_a.png "$OUT/s2_a.png" >/dev/null 2>&1 || true
+  adb -s "$SERIAL" pull /data/local/tmp/s2_b.png "$OUT/s2_b.png" >/dev/null 2>&1 || true
+  D2=$(python3 - "$OUT/s2_a.png" "$OUT/s2_b.png" 2>/dev/null <<'PY'
+import sys
+try:
+    from PIL import Image, ImageChops
+    a=Image.open(sys.argv[1]).crop((880,1800,1120,2400)).resize((60,60))
+    b=Image.open(sys.argv[2]).crop((880,1800,1120,2400)).resize((60,60))
+    d=ImageChops.difference(a,b).convert("L").getdata()
+    print(round(sum(d)/len(d),2))
+except Exception: print("?")
+PY
+)
+  echo "SWITCH2_PIXEL_DIFF=$D2" | tee -a "$OUT/steps.txt"
 fi
 sleep 10  # apply() 异步写 prefs, 立刻 force-stop 会丢(疑点); 等落盘再退
 sh_ "input keyevent 4" >/dev/null 2>&1 || true; sh_ "input keyevent 4" >/dev/null 2>&1 || true
