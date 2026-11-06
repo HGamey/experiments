@@ -52,32 +52,43 @@ echo "INSTALL: $INST_OUT"
 echo "$INST_OUT" | grep -qi 'success' || { echo "FATAL: install failed"; exit 5; }
 
 # 3) 目标目录; uid 用 dumpsys 解析 (pilot 10386 是那台机的值, 每机不同)
-BASE=/storage/emulated/0/diii4a/doom3
-STATE=/storage/emulated/0/diii4a/state
+# 实测(诊断28-30, 2026-11-06): 引擎无视命令行 fs_basepath/fs_savepath extras, 固定读
+# 默认路径 /storage/emulated/0/Android/data/<pkg>/files/diii4a/{doom3,state}。数据必须铺这里。
+# 且 demo00.pk4 必须是内联 patch 过的(单一 script/weapon_base.script = 2662B override,
+# 修复 weapon_fists 缺 WEAPON_NETFIRING 的 Map Shutdown)。脚本在下文现场 patch。
+BASE=/storage/emulated/0/Android/data/$PKG/files/diii4a/doom3
+STATE=/storage/emulated/0/Android/data/$PKG/files/diii4a/state
 UID_=$(sh_ "cmd package list packages -U 2>/dev/null | grep '$PKG' | sed 's/.*uid://' | tr -d ' '" | head -1)
 [ -n "$UID_" ] || UID_=$(sh_ "su -c 'stat -c %u /data/data/$PKG' 2>/dev/null" | head -1 | tr -d ' ')
 echo "APP_UID=$UID_"
 sh_ "rm -rf /data/local/tmp/doom_stage" >/dev/null
 sh_ "mkdir -p /data/local/tmp/doom_stage/doom3/base /data/local/tmp/doom_stage/state/base/script /data/local/tmp/doom_stage/state/base/demos"
-# weapon_base.script 与其余素材一样按 sha 从缓存 blob 推
+# weapon_base.script(2662B override) 内联 patch 进 demo00.pk4(单一成员), 修 weapon_fists Map Shutdown
 SCRIPT_SRC="$CACHE/blobs/$SCRIPT_SHA"
-[ -f "$SCRIPT_SRC" ] || SCRIPT_SRC=""
-if [ -n "$SCRIPT_SRC" ]; then
-  push_ "$SCRIPT_SRC" /data/local/tmp/doom_stage/state/base/script/weapon_base.script
-fi
-push_ "$PK4" /data/local/tmp/doom_stage/doom3/base/demo00.pk4
-sh_ "sha256sum /data/local/tmp/doom_stage/doom3/base/demo00.pk4" | grep -q "$PK4_SHA" || { echo "FATAL: pk4 sha mismatch on device"; exit 4; }
-sh_ "[ -f /data/local/tmp/doom_stage/state/base/script/weapon_base.script ] && sha256sum /data/local/tmp/doom_stage/state/base/script/weapon_base.script" | grep -q "$SCRIPT_SHA" || { echo "FATAL: script missing/mismatch"; exit 4; }
+[ -f "$SCRIPT_SRC" ] || { echo "FATAL: script blob missing"; exit 4; }
+PK4F="$OUT/demo00_fixed.pk4"
+cp "$PK4" "$PK4F"
+chmod u+w "$PK4F"
+zip -q -d "$PK4F" 'script/weapon_base.script' 2>/dev/null || true
+mkdir -p "$OUT/zfix/script"
+cp "$SCRIPT_SRC" "$OUT/zfix/script/weapon_base.script"
+(cd "$OUT/zfix" && zip -q "$PK4F" script/weapon_base.script)
+[ "$(unzip -p "$PK4F" script/weapon_base.script | shasum -a 256 | cut -d ' ' -f 1)" = "$SCRIPT_SHA" ] || { echo "FATAL: patch member mismatch"; exit 4; }
+[ "$(unzip -l "$PK4F" | grep -c 'script/weapon_base.script')" = "1" ] || { echo "FATAL: duplicate member"; exit 4; }
+FIXED_SHA=$(shasum -a 256 "$PK4F" | cut -d ' ' -f 1)
+echo "PK4_FIXED_SHA=$FIXED_SHA"
+push_ "$PK4F" /data/local/tmp/doom_stage/doom3/base/demo00.pk4
+sh_ "sha256sum /data/local/tmp/doom_stage/doom3/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: pk4 sha mismatch on device"; exit 4; }
 # 落位: root 用 su (顺带修属主), 否则试 shell 直写 Android/data
 if sh_ "su -c true" >/dev/null 2>&1; then
-  sh_ "su -c 'mkdir -p /data/media/0/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/diii4a/ && chown -R $UID_:$UID_ /data/media/0/diii4a && find /data/media/0/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/diii4a -type f -exec chmod 660 {} \;'"
+  sh_ "su -c 'mkdir -p /data/media/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /data/media/0/Android/data/$PKG/files/diii4a/ && chown -R $UID_:$UID_ /data/media/0/Android/data/$PKG/files/diii4a && find /data/media/0/Android/data/$PKG/files/diii4a -type d -exec chmod 770 {} \; && find /data/media/0/Android/data/$PKG/files/diii4a -type f -exec chmod 660 {} \;'"
   HOW=su
 else
-  sh_ "mkdir -p /storage/emulated/0/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/diii4a/" >/dev/null
+  sh_ "mkdir -p /storage/emulated/0/Android/data/$PKG/files/diii4a && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/Android/data/$PKG/files/diii4a/" >/dev/null
   HOW=shell
 fi
 # 落位核查必须 su (FUSE 下 shell 对 Android/data 一律 EACCES, 不代表文件不存在)
-sh_ "su -c 'ls -la /data/media/0/diii4a/doom3/base/demo00.pk4; sha256sum /data/media/0/diii4a/doom3/base/demo00.pk4'" || { echo "FATAL: pk4 not in place (su check failed)"; exit 9; }
+sh_ "su -c 'ls -la /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4; sha256sum /data/media/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4'" || { echo "FATAL: pk4 not in place (su check failed)"; exit 9; }
 
 # 4) 启动 (冻结命令, fs_savepath 指自己的 state; com_showFPS 开着便于人看; logfile 2 留控制台日志)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
@@ -87,7 +98,7 @@ CMD="game.arm +set fs_basepath $BASE +set fs_savepath $STATE +set developer 1 +s
 LIB_SHA="${LIB_SHA:-}"
 if [ -n "$LIB_SHA" ] && [ -f "$CACHE/blobs/$LIB_SHA" ] && sh_ "su -c true" >/dev/null 2>&1; then
   push_ "$CACHE/blobs/$LIB_SHA" /data/local/tmp/doom_stage/doom3/libdoom3.so >/dev/null
-  sh_ "su -c 'cp /data/local/tmp/doom_stage/doom3/libdoom3.so /data/media/0/diii4a/doom3/libdoom3.so && chown $UID_:$UID_ /data/media/0/diii4a/doom3/libdoom3.so && chmod 660 /data/media/0/diii4a/doom3/libdoom3.so'" >/dev/null
+  sh_ "su -c 'cp /data/local/tmp/doom_stage/doom3/libdoom3.so /data/media/0/Android/data/$PKG/files/diii4a/doom3/libdoom3.so && chown $UID_:$UID_ /data/media/0/Android/data/$PKG/files/diii4a/doom3/libdoom3.so && chmod 660 /data/media/0/Android/data/$PKG/files/diii4a/doom3/libdoom3.so'" >/dev/null
   PREF=/data/user/0/$PKG/shared_prefs/${PKG}_preferences.xml
   sh_ "su -c '[ -f $PREF ] && sed \"/name=\\\"harm_load_local_engine_lib\\\"/d; /<\\/map>/i\\\\    <boolean name=\\\"harm_load_local_engine_lib\\\" value=\\\"true\\\" />\" $PREF > $PREF.p2 && chown $UID_:$UID_ $PREF.p2 && chmod 600 $PREF.p2 && mv $PREF.p2 $PREF && restorecon $PREF'" >/dev/null && echo "LOCAL_LIB_ARMED=$LIB_SHA"
 fi
@@ -98,8 +109,8 @@ echo "GAME_PID=$P"
 [ -n "$P" ] || { echo "FATAL: game process not running after launch"; exit 6; }
 sh_ "dumpsys window | grep -i mCurrentFocus || true"
 
-# 4b) 进图门: 35s 后查加载器错误弹窗 (uiautomator 抓文本) 与 qconsole 进图行; 弹窗=立即失败并留证据
-sleep 35
+# 4b) 进图门: 60s 后查加载器错误弹窗 (uiautomator 抓文本); 弹窗=立即失败并留证据
+sleep 60
 sh_ "uiautomator dump /data/local/tmp/doom_ui.xml" >/dev/null 2>&1 || true
 sh_ "cat /data/local/tmp/doom_ui.xml 2>/dev/null" > "$OUT/ui_dump.xml" 2>/dev/null || true
 if grep -qE '数据文件|没有被发现|not.*found|Game data' "$OUT/ui_dump.xml" 2>/dev/null; then
