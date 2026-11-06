@@ -1,0 +1,121 @@
+{
+  "purpose": "Trained doom_scratch trial model, job 3aa25dd077c5, trainer cdb6c04; 250 nearly identical corridor frames, no generalization claim; phone acceptance pending",
+  "upstream": "https://github.com/glKarin/com.n0n3m4.diii4a",
+  "upstream_commit": "ce49510f3b0c04969eab8ebe8238416e84e4f0bb",
+  "implementation_commit": "c7b179f5502206c5cef0ac5979b8ab6eb4e55011",
+  "abi": "arm64-v8a",
+  "min_api": 24,
+  "ndk": "Pkg.Desc = Android NDK\nPkg.Revision = 23.2.8568313",
+  "files": {
+    "COPYING": {
+      "sha256": "695f0b0bed04c7193b00414e30cc06cda5be2fe3c0d32112c145d7dfb36c9cc7",
+      "bytes": 106626
+    },
+    "README.md": {
+      "sha256": "5980ae72bcc84b1211fed6d4dade4839e6c7aa1e16a73af19bd893ab36763d18",
+      "bytes": 4863
+    },
+    "libdoom3.so": {
+      "sha256": "e3314b7357e6d79973a5b847c1ec3c680b133e01d9bc387276669d3c43107fe6",
+      "bytes": 8194672
+    },
+    "model.json": {
+      "sha256": "94be183045a694d8bbcda07bf36c68a6dc01d50724f233392faebe4ddf8c2568",
+      "bytes": 531
+    },
+    "shaders/model.json": {
+      "sha256": "94be183045a694d8bbcda07bf36c68a6dc01d50724f233392faebe4ddf8c2568",
+      "bytes": 531
+    },
+    "shaders/small_sr_shaders.h": {
+      "sha256": "9a4874f74a28365ab3a0e4a3f6977f98a6fa38d12fc4c849556a2d3dcd1c3498",
+      "bytes": 100443
+    },
+    "shaders/sr_conv1.frag": {
+      "sha256": "ace568e57729e623ec3d220f9704826fe7cfabed6a35047a72fcf8bccc460d1d",
+      "bytes": 23143
+    },
+    "shaders/sr_conv2.frag": {
+      "sha256": "d1548f66b7c2917ee8e0151ea6d96dffb03bda40becbbe020e6eb8793474e8bf",
+      "bytes": 38427
+    },
+    "shaders/sr_output.frag": {
+      "sha256": "26e9035d649017d0cc11709692cd5af5874fb14eaa07b0add10bf0b55f00532a",
+      "bytes": 33301
+    },
+    "shaders/sr_vertex.vert": {
+      "sha256": "62e8789d6fe4d6cc6d8f67f4ee43313eb91ec887694315e91fe9e1edffda6c35",
+      "bytes": 178
+    },
+    "source/build_engine.sh": {
+      "sha256": "a7c91144148f08104e6a2580ee78160cf3a2fda56187b141eb029da11d97d898",
+      "bytes": 1244
+    },
+    "source/export_glsl.py": {
+      "sha256": "b68292eaee096323b7edc2c927af593ed90757508b454eea883f03d692e4a3e8",
+      "bytes": 6569
+    },
+    "source/host_adapter.py": {
+      "sha256": "a935057c344cb93202abcb0c52e16158f7f83fb94402ce002ce11680f8832434",
+      "bytes": 1714
+    },
+    "source/package_model.py": {
+      "sha256": "bc7cf148bb3dc1b08c09d3052692d1f57e62a5d88318c797cc6422e311035ec0",
+      "bytes": 4545
+    },
+    "source/patch_engine.py": {
+      "sha256": "c6d30e23cebc9b600b8b56d1ec0501a4146e319db6945781f238aa211148c3c4",
+      "bytes": 1708
+    },
+    "source/small_sr.cpp": {
+      "sha256": "9699413ed1f1c9ae00969cce6b4d30ed119750fdd0668146cbc89f4c7be51ab1",
+      "bytes": 6339
+    },
+    "source/sr_keys.cfg": {
+      "sha256": "fb62ad057b86df98cab3f5114e2bee51f735f0f212cbf0339a7c3c3ec9b7d65b",
+      "bytes": 97
+    },
+    "source/sr_native.cfg": {
+      "sha256": "bcaa5fdbe8691901a801c907a5494ca33f16e51fc7f18a1e46ecd94a4a678de0",
+      "bytes": 89
+    },
+    "source/sr_off.cfg": {
+      "sha256": "d45a7bbecbd59827791a672a55cd0fbddd066d4cb5b0981d019b9e9d06b3f2b4",
+      "bytes": 68
+    },
+    "source/sr_on.cfg": {
+      "sha256": "94043d72afab53ea75699c39b532ad46e598b6176b53d72c9ef1f5b370a535cf",
+      "bytes": 60
+    },
+    "source/validate_gles.py": {
+      "sha256": "f7a6cc69f7a78795e5c3b5018710fc0a2e55f8c21acfce1aa2bc8994cea6b747",
+      "bytes": 7399
+    },
+    "sr_keys.cfg": {
+      "sha256": "fb62ad057b86df98cab3f5114e2bee51f735f0f212cbf0339a7c3c3ec9b7d65b",
+      "bytes": 97
+    },
+    "sr_native.cfg": {
+      "sha256": "bcaa5fdbe8691901a801c907a5494ca33f16e51fc7f18a1e46ecd94a4a678de0",
+      "bytes": 89
+    },
+    "sr_off.cfg": {
+      "sha256": "d45a7bbecbd59827791a672a55cd0fbddd066d4cb5b0981d019b9e9d06b3f2b4",
+      "bytes": 68
+    },
+    "sr_on.cfg": {
+      "sha256": "94043d72afab53ea75699c39b532ad46e598b6176b53d72c9ef1f5b370a535cf",
+      "bytes": 60
+    },
+    "validation.log": {
+      "sha256": "efb0df1369a3559fdd8f7d3a8e48b892acc7b9bfa5be1b253ff4562b858516c1",
+      "bytes": 793
+    },
+    "weights.npz": {
+      "sha256": "6cc44b53ab9d6701617c48a24515a49ac20ca7e7417bcb3c7d5d02570f1d60e5",
+      "bytes": 22542
+    }
+  },
+  "archive_sha256": "3a2243f84e20c6e7358a7adf627567ee633c1611bc14055bed6f9a9448dd6b8f",
+  "archive_bytes": 4202339
+}
