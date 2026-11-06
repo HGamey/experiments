@@ -31,7 +31,12 @@ FIXED_SHA=$(shasum -a 256 "$PK4F" | cut -d ' ' -f 1); echo "PK4_FIXED_SHA=$FIXED
 adb -s "$SERIAL" push "$PK4F" /data/local/tmp/doom_stage/doom3/base/demo00.pk4 >/dev/null
 sh_ "mkdir -p /storage/emulated/0/diii4a && rm -rf $BASE $STATE && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state /storage/emulated/0/diii4a/"
 sh_ "sha256sum $BASE/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: public pk4 sha mismatch"; exit 4; }
-echo "PUBLIC_SEEDED=ok" | tee -a "$OUT/steps.txt"
+# R6(53f79b84816f)证实: pm clear后私有目录为空, 仅公共数据引擎不起(无pid) => 双铺(R5 cae1e123857e已验证可进图)
+UID_=$(sh_ "cmd package list packages -U 2>/dev/null | grep '$PKG' | sed 's/.*uid://' | tr -d ' '" | head -1)
+PDATA=/storage/emulated/0/Android/data/$PKG/files/diii4a
+sh_ "mkdir -p $PDATA && cp -r /data/local/tmp/doom_stage/doom3 /data/local/tmp/doom_stage/state $PDATA/"
+sh_ "sha256sum $PDATA/doom3/base/demo00.pk4" | grep -q "$FIXED_SHA" || { echo "FATAL: private pk4 sha mismatch"; exit 4; }
+echo "PUBLIC_SEEDED=ok PRIVATE_SEEDED=ok UID=$UID_" | tee -a "$OUT/steps.txt"
 
 # 3) 启动 (Q3EMain 读 game+command; force-stop 已做)
 sh_ "input keyevent 224; wm dismiss-keyguard" >/dev/null 2>&1 || true
