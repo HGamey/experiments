@@ -177,11 +177,11 @@ echo "STEP3_LAUNCH_DONE" >> "$OUT/steps.txt"
 
 # 4) 三档: native(F9) -> F8(1) -> F8(2); 每档 2 张截图, 校验 sha 互异
 shot_() { sh_ "screencap -p /data/local/tmp/t_$1_$2.png" >/dev/null; adb -s "$SERIAL" pull "/data/local/tmp/t_$1_$2.png" "$OUT/t_$1_$2.png" >/dev/null 2>&1 || true; }
-sh_ "input keyevent 143" >/dev/null 2>&1 || true; sleep 8   # F9: r_smallSR 0
+sh_ "input keyevent 139" >/dev/null 2>&1 || true; sleep 8   # F9: r_smallSR 0
 shot_ native 1; sleep 10; shot_ native 2
-sh_ "input keyevent 142" >/dev/null 2>&1 || true; sleep 10  # F8: -> 1 (off)
+sh_ "input keyevent 138" >/dev/null 2>&1 || true; sleep 10  # F8: -> 1 (off)
 shot_ off 1; sleep 10; shot_ off 2
-sh_ "input keyevent 142" >/dev/null 2>&1 || true; sleep 10  # F8: -> 2 (on)
+sh_ "input keyevent 138" >/dev/null 2>&1 || true; sleep 10  # F8: -> 2 (on)
 shot_ on 1; sleep 10; shot_ on 2
 shasum -a 256 "$OUT"/t_*.png > "$OUT/shots_sha.txt" 2>/dev/null || true
 cat "$OUT/shots_sha.txt"
