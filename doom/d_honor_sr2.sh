@@ -99,15 +99,16 @@ for stepkw in "其他" "调试" "加载本地引擎库" "Load local engine"; do
   if [ "$POS" = "NONE" ]; then
     echo "UI_MISS=$stepkw" | tee -a "$OUT/steps.txt"
   else
-    sh_ "input tap $POS" >/dev/null; sleep 2
-    echo "UI_HIT=$stepkw at $POS" | tee -a "$OUT/steps.txt"
-    case "$stepkw" in "加载本地引擎库"|"Load local engine") nav_done=1;; esac
+    case "$stepkw" in
+      "加载本地引擎库"|"Load local engine") echo "UI_FOUND=$stepkw at $POS (不点文字, 开关由后续步骤点)" | tee -a "$OUT/steps.txt"; nav_done=1;;
+      *) sh_ "input tap $POS" >/dev/null; sleep 2; echo "UI_HIT=$stepkw at $POS" | tee -a "$OUT/steps.txt";;
+    esac
   fi
 done
 sleep 1; dump_ t; TS=$(toggle_state_); echo "TOGGLE_STATE=$TS" | tee -a "$OUT/steps.txt"
 sh_ "screencap -p /data/local/tmp/settings2.png" >/dev/null
 adb -s "$SERIAL" pull /data/local/tmp/settings2.png "$OUT/settings_page.png" >/dev/null 2>&1 || true
-# 若未勾上: 找开关控件(行右侧独立 LinearLayout/Switch, x1 > 文字右缘), 点其中心
+# 若未勾上(checked 属性不回写, 不可信): 点行右侧开关中心一次, 用开关区域像素差验证
 if [ "$TS" != "CHECKED=true" ]; then
   dump_ nav
   RP=$(python3 - "$OUT/ui_nav.xml" <<'PY'
@@ -126,7 +127,7 @@ for j in range(tb+1, min(len(nodes), tb+6)):
     b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', nodes[j])
     if not b: continue
     x1, y1, x2, y2 = map(int, b.groups())
-    if x1 >= tx[2] - 20 and x2 > x1:  # 同行右侧的控件区
+    if x1 >= tx[2] - 20 and x2 > x1:
         print(f"{(x1+x2)//2} {(y1+y2)//2}"); raise SystemExit
 print("NOSIB")
 PY
@@ -134,16 +135,28 @@ PY
   echo "SWITCH_POS=$RP" | tee -a "$OUT/steps.txt"
   if [ "$RP" != "NONE" ] && [ "$RP" != "NOSIB" ]; then
     X=$(echo "$RP" | cut -d ' ' -f 1); Y=$(echo "$RP" | cut -d ' ' -f 2)
-    sh_ "input tap $X $Y" >/dev/null; sleep 2; dump_ t; TS=$(toggle_state_); echo "TOGGLE_SWITCH_STATE=$TS" | tee -a "$OUT/steps.txt"
-    sh_ "screencap -p /data/local/tmp/settings4.png" >/dev/null
-    adb -s "$SERIAL" pull /data/local/tmp/settings4.png "$OUT/settings_switch_tapped.png" >/dev/null 2>&1 || true
+    sh_ "screencap -p /data/local/tmp/sw_a.png" >/dev/null
+    sh_ "input tap $X $Y" >/dev/null; sleep 2
+    sh_ "screencap -p /data/local/tmp/sw_b.png" >/dev/null
+    adb -s "$SERIAL" pull /data/local/tmp/sw_a.png "$OUT/sw_a.png" >/dev/null 2>&1 || true
+    adb -s "$SERIAL" pull /data/local/tmp/sw_b.png "$OUT/sw_b.png" >/dev/null 2>&1 || true
+    DIFF=$(python3 - "$OUT/sw_a.png" "$OUT/sw_b.png" 2>/dev/null <<'PY'
+import sys
+try:
+    from PIL import Image, ImageChops
+except ImportError: print("?"); raise SystemExit
+try:
+    a=Image.open(sys.argv[1]).crop((880,1800,1120,2270)).resize((60,60))
+    b=Image.open(sys.argv[2]).crop((880,1800,1120,2270)).resize((60,60))
+    d=ImageChops.difference(a,b).convert("L").getdata()
+    print(round(sum(d)/len(d),2))
+except Exception: print("?")
+PY
+)
+    echo "TOGGLE_PIXEL_DIFF=$DIFF (>0 = 开关已切换)" | tee -a "$OUT/steps.txt"
+    sh_ "screencap -p /data/local/tmp/settings3.png" >/dev/null
+    adb -s "$SERIAL" pull /data/local/tmp/settings3.png "$OUT/settings_page_after_tap.png" >/dev/null 2>&1 || true
   fi
-  if [ "$TS" != "CHECKED=true" ]; then
-    dump_ nav; POS=$(click_text_ nav "加载本地引擎库")
-    [ "$POS" != "NONE" ] && { sh_ "input tap $POS" >/dev/null; sleep 2; dump_ t; TS=$(toggle_state_); echo "TOGGLE_CENTER_STATE=$TS" | tee -a "$OUT/steps.txt"; }
-  fi
-  sh_ "screencap -p /data/local/tmp/settings3.png" >/dev/null
-  adb -s "$SERIAL" pull /data/local/tmp/settings3.png "$OUT/settings_page_retry.png" >/dev/null 2>&1 || true
 fi
 sh_ "input keyevent 4" >/dev/null 2>&1 || true; sh_ "input keyevent 4" >/dev/null 2>&1 || true
 sh_ "am force-stop $PKG" >/dev/null; sleep 2
