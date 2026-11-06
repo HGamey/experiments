@@ -189,10 +189,21 @@ def assign_split(descriptors, test_fraction):
     return train, test, method
 
 
-def decode_record(item):
+def crop_box(width, height, crop):
+    """crop is (top, bottom, left, right) HR pixels; result must stay even."""
+    top, bottom, left, right = crop
+    box = (left, top, width - right, height - bottom)
+    if min(box[2] - box[0], box[3] - box[1]) < 16 or (box[2] - box[0]) % 2 or (box[3] - box[1]) % 2:
+        raise ValueError(f"crop {crop} leaves invalid even size {box[2] - box[0]}x{box[3] - box[1]}")
+    return box
+
+
+def decode_record(item, crop=(0, 0, 0, 0)):
     with Image.open(item["path"]) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         image.load()
+    if any(crop):
+        image = image.crop(crop_box(*image.size, crop))
     width, height = image.size
     if width < 16 or height < 16 or width % 2 or height % 2:
         raise ValueError(f"HR dimensions must be even and >=16: {item['path']} {image.size}")
@@ -313,6 +324,10 @@ def main():
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--test-fraction", type=float, default=0.1)
     parser.add_argument("--min-frame-mad", type=float, default=0.5, help="near-duplicate luma threshold in 8-bit levels; 0 disables")
+    parser.add_argument("--crop-top", type=int, default=0, help="HR pixels removed from top before LR generation (fps overlay)")
+    parser.add_argument("--crop-bottom", type=int, default=0, help="HR pixels removed from bottom before LR generation (system bar)")
+    parser.add_argument("--crop-left", type=int, default=0)
+    parser.add_argument("--crop-right", type=int, default=0)
     parser.add_argument("--scratch-lr", type=float, default=0.001)
     parser.add_argument("--finetune-lr", type=float, default=0.0002)
     args = parser.parse_args()
@@ -343,8 +358,9 @@ def main():
         train_desc, test_desc, split_method = assign_split(descriptors, args.test_fraction)
     if len(train_desc) < 4 or len(test_desc) < 2:
         raise RuntimeError(f"need at least 4 unique train and 2 unique test frames, got {len(train_desc)}/{len(test_desc)}")
-    train_records = [decode_record(item) for item in train_desc]
-    test_records = [decode_record(item) for item in test_desc]
+    crop = (args.crop_top, args.crop_bottom, args.crop_left, args.crop_right)
+    train_records = [decode_record(item, crop) for item in train_desc]
+    test_records = [decode_record(item, crop) for item in test_desc]
     manifest = {
         "schema": "hgamey/doom-sr-data@1",
         "lr_generation": "Pillow bicubic HR 0.5x, RGB uint8",
