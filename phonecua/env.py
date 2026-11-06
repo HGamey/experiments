@@ -28,6 +28,11 @@ NAMESPACES = ("system", "secure", "global")
 SCRATCH_DIRS = ("/sdcard/Download", "/sdcard/Documents")
 KEEP_RUNNING = ("com.hihonor.android.launcher", "com.android.systemui", "com.android.launcher3", "com.baidu.input",
                 "com.sohu.inputmethod", "com.google.android.inputmethod", "android", "com.android.permissioncontroller")
+# Reset force-stops only stock apps an episode may open. Anything else seen in the foreground belongs to someone
+# else sharing the phone (remote mode interleaves with other jobs between steps) and is reported, never killed.
+STOCK_APPS = ("com.android.settings", "com.hihonor.deskclock", "com.hihonor.calculator", "com.hihonor.filemanager",
+              "com.honor.browser", "com.hihonor.notepad", "com.hihonor.calendar", "com.android.documentsui",
+              "com.hihonor.android.settings", "com.hihonor.systemmanager", "com.hihonor.securitycenter")
 # Settings the system rewrites on its own; restoring them is pointless and can fight the OS.
 VOLATILE = re.compile(r"timestamp|_count$|^last_|_last_|elapsed|_ms$|^next_alarm_formatted$|^screen_brightness_float$|"
                       r"^boot_count$|^ota_|^sysui_|^cloud_|^card_batch_no$|^keyguard_|^ThermalTempLevel$", re.I)
@@ -306,14 +311,15 @@ class PhoneEnv:
     def reset(self, snap, cleanup_cmds=(), packages=()):
         """Undo the episode: force-stop apps seen in foreground, run task cleanup, remove new cua_* files,
         restore every changed setting, go home. Returns a restore record (verified by a fresh snapshot)."""
-        pkgs = sorted((self.seen_pkgs | set(packages)) - {p for p in self.seen_pkgs if p.startswith(KEEP_RUNNING)}
-                      - (getattr(self, "initial_pkgs", set()) - set(packages)))
+        initial = getattr(self, "initial_pkgs", set())
+        pkgs = sorted({p for p in self.seen_pkgs if p in STOCK_APPS and p not in initial} | set(packages))
+        foreign = sorted(p for p in self.seen_pkgs if p not in STOCK_APPS and not p.startswith(KEEP_RUNNING))
         pre = (["input keyevent 3"] + [f"am force-stop {p}" for p in pkgs] + list(cleanup_cmds)
                + [f"rm -rf {d}/cua_*" for d in SCRATCH_DIRS] + [f"rm -rf {DEV_TMP}"])
         # restore needs the current settings; read them in the same trip as cleanup, then a second trip writes back
         out = self.sh("\n".join(pre) + "\n" + self.snapshot_script(), timeout=180)
         now = self.parse_snapshot(out)
-        rec = {"force_stopped": pkgs, "cleanup": list(cleanup_cmds), "rounds": []}
+        rec = {"force_stopped": pkgs, "foreign_pkgs_seen": foreign, "cleanup": list(cleanup_cmds), "rounds": []}
         for _ in range(3):
             cmds, changes = self.restore_script(snap, now)
             # files that existed before the episode can't be restored by rm; flag them

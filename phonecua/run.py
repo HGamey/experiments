@@ -84,6 +84,8 @@ def run_task(env, agent, task, mode, max_steps, out_dir, log):
                 restore["gui_cleanup"] = {"error": f"{type(ex).__name__}: {ex}"}
         restore.update(env.reset(snap, task.get("cleanup", []), task.get("packages", [])))
         rec["restore_ok"] = restore["ok"]
+        # another job driving the phone mid-episode shows up as a non-stock app in our observations
+        rec["interference"] = restore.get("foreign_pkgs_seen") or []
         rec["t1"] = time.time()
         rec["n_steps"] = len(rec["steps"])
         dump_json(os.path.join(out_dir, "traj.json"), rec)
@@ -138,7 +140,7 @@ def main():
             rec, restore = run_task(env, agent, task, a.mode, a.max_steps, os.path.join(out, tag), log)
             restores[tag] = restore
             row = {k: rec.get(k) for k in ("task", "passed", "n_steps", "answer", "check_detail", "restore_ok", "faster",
-                                           "error", "agent_error")}
+                                           "error", "agent_error", "interference")}
             row.update(run=r, seconds=round(rec["t1"] - rec["t0"], 1),
                        shell_steps=sum(1 for s in rec["steps"] if s["action"].get("action") == "shell"),
                        gui_steps=sum(1 for s in rec["steps"] if s["action"].get("action") not in ("shell", "finish")))
