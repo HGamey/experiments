@@ -17,6 +17,7 @@ echo "OUT=$OUT SERIAL=$SERIAL UID=$UID_"
 
 CACHE=/Users/mac/hgamey/phonefarm/_games/cache
 cp "$CACHE/blobs/$PK4_SHA" "$OUT/demo00_patched.pk4"
+chmod u+w "$OUT/demo00_patched.pk4"
 mkdir -p "$OUT/script"
 cp "$CACHE/blobs/$SCRIPT_SHA" "$OUT/script/weapon_base.script"
 sha256sum "$OUT/demo00_patched.pk4" "$OUT/script/weapon_base.script"
