@@ -9,6 +9,7 @@
 - `imgscale/`：宿主 CPU 放大方法基准（截图缩半再放大，PSNR/SSIM/耗时），纯标准库。
 - `gfrc/`：厂商 G-FRC+ 对照 A/B。
 - `npu_exp/`：原神 NPU 超分三臂对照（N3，BH3GEI）。层和模型取自作者机器上的 N1 产物，在别处跑要给 `--layer-so` 和 `--model`。报告在 HGamey/docs 的 `experiments/2026-10-20-npu-sr`。
+- `phonecua/`：真机混合 computer-use 环境（GUI 点按 + `adb shell`）。`env.py` 观测/动作/还原，`tasks.py` 20 个带程序化判定的系统应用任务，`run.py` 跑 oracle/noop/LLM 智能体并记录轨迹；节点上直接跑，或用 `--remote <节点>/<设备>` 经 pf-node 逐步驱动。
 - `o2_dvfs/`、`repro/`：O2 DVFS 扫描与复现打包。`repro/pack_repro.py` 生成的脚本仍假定在 phonefarm 老位置运行。
 
 历史来自 HGamey/hgamey 的 `phonefarm/loop_v1/` 与 `phonefarm/feat/selfsr` 分支，作者和时间保留。
