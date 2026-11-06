@@ -126,6 +126,12 @@ class LLMAgent:
                 return d["choices"][0]["message"].get("content") or ""
             except urllib.error.HTTPError as ex:
                 last = f"HTTP {ex.code}"
+                msg = ex.read().decode(errors="replace")[:300]
+                if ex.code == 400 and "only 1 is allowed" in msg and self.temperature != 1:
+                    self.temperature = 1  # some Kimi models accept temperature=1 only
+                    body = json.dumps({**json.loads(body), "temperature": 1}).encode()
+                    continue
+                last += " " + msg
                 if ex.code not in (429, 500, 502, 503, 504, 529):
                     raise RuntimeError(last) from None
             except (urllib.error.URLError, TimeoutError, OSError) as ex:
