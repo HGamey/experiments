@@ -51,13 +51,12 @@ echo "R8_PK4_SHA=$(shasum -a 256 "$OUT/demo00_r8.pk4" | cut -d ' ' -f 1)"
 sh_ "am force-stop $PKG" >/dev/null || true; sh_ "am kill-all" >/dev/null 2>&1 || true
 
 # 2) 双目录铺放 (公共+私有, 均含同一修复 pk4)
-sh_ "rm -rf /data/local/tmp/doom_stage" >/dev/null
-sh_ "mkdir -p /data/local/tmp/doom_stage/state/base"
-adb -s "$SERIAL" push "$OUT/demo00_r8.pk4" /data/local/tmp/doom_stage/doom3.pk4 >/dev/null 2>&1 || adb -s "$SERIAL" push "$OUT/demo00_r8.pk4" /data/local/tmp/doom.pk4 >/dev/null
+sh_ "rm -rf /data/local/tmp/doom_stage /data/local/tmp/doom8.pk4" >/dev/null
+adb -s "$SERIAL" push "$OUT/demo00_r8.pk4" /data/local/tmp/doom8.pk4
 sh_ "mkdir -p /storage/emulated/0/diii4a && rm -rf /storage/emulated/0/diii4a/doom3 /storage/emulated/0/diii4a/state /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3 /storage/emulated/0/Android/data/$PKG/files/diii4a/state"
 sh_ "mkdir -p /storage/emulated/0/diii4a/doom3/base /storage/emulated/0/diii4a/state/base /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base /storage/emulated/0/Android/data/$PKG/files/diii4a/state/base"
-sh_ "cp /data/local/tmp/doom.pk4 /storage/emulated/0/diii4a/doom3/base/demo00.pk4 2>/dev/null || cp /data/local/tmp/doom3.pk4 /storage/emulated/0/diii4a/doom3/base/demo00.pk4"
-sh_ "cp /data/local/tmp/doom.pk4 /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4 2>/dev/null || cp /data/local/tmp/doom3.pk4 /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4"
+sh_ "cp /data/local/tmp/doom8.pk4 /storage/emulated/0/diii4a/doom3/base/demo00.pk4"
+sh_ "cp /data/local/tmp/doom8.pk4 /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4"
 R8_SHA=$(shasum -a 256 "$OUT/demo00_r8.pk4" | cut -d ' ' -f 1)
 sh_ "sha256sum /storage/emulated/0/diii4a/doom3/base/demo00.pk4" | grep -q "$R8_SHA" || { echo "FATAL: public sha"; exit 4; }
 sh_ "sha256sum /storage/emulated/0/Android/data/$PKG/files/diii4a/doom3/base/demo00.pk4" | grep -q "$R8_SHA" || { echo "FATAL: private sha"; exit 4; }
@@ -120,5 +119,5 @@ open(os.path.join(out, "frames_kept.txt"), "w").write("\n".join(kept) + "\n")
 print("KEPT=", len(kept))
 PY
 ALIVE=$(sh_ "pidof $PKG || true" | tr -d '\r'); echo "ALIVE_AFTER=$ALIVE"
-sh_ "am force-stop $PKG" >/dev/null || true; sh_ "rm -rf /data/local/tmp/doom_stage /data/local/tmp/doom.pk4 /data/local/tmp/doom3.pk4" >/dev/null
+sh_ "am force-stop $PKG" >/dev/null || true; sh_ "rm -rf /data/local/tmp/doom8.pk4" >/dev/null
 echo "HONOR_R8_DONE KEPT=$(ls "$OUT/frames" 2>/dev/null | grep -c png || true) RAW=$frame" | tee -a "$OUT/steps.txt"
