@@ -30,7 +30,7 @@ KEEP_RUNNING = ("com.hihonor.android.launcher", "com.android.systemui", "com.and
                 "com.sohu.inputmethod", "com.google.android.inputmethod", "android", "com.android.permissioncontroller")
 # Settings the system rewrites on its own; restoring them is pointless and can fight the OS.
 VOLATILE = re.compile(r"timestamp|_count$|^last_|_last_|elapsed|_ms$|^next_alarm_formatted$|^screen_brightness_float$|"
-                      r"^boot_count$|^ota_|^sysui_|^cloud_|^card_batch_no$", re.I)
+                      r"^boot_count$|^ota_|^sysui_|^cloud_|^card_batch_no$|^keyguard_|^ThermalTempLevel$", re.I)
 # Commands an agent may not run through shell{}: they would disturb the shared phone or touch personal data.
 SHELL_DENY = [
     (r"\breboot\b|\bsvc\s+power\b|\bsetprop\b", "rebooting / system properties"),
@@ -266,7 +266,7 @@ class PhoneEnv:
         """Snapshot, run task setup, go home, observe. One round trip."""
         script = (f"mkdir -p {DEV_TMP}\necho @@CUA:PRE:BEGIN; dumpsys activity activities 2>/dev/null | "
                   "grep -m1 topResumedActivity; echo @@CUA:PRE:END\n"
-                  "input keyevent 224; wm dismiss-keyguard\n" + self.snapshot_script()
+                  "input keyevent 224; wm dismiss-keyguard; sleep 1\n" + self.snapshot_script()
                   + "echo @@CUA:SETUP:BEGIN\n" + "\n".join(setup_cmds) + "\necho @@CUA:SETUP:END\n"
                   + "input keyevent 3\nsleep 1.5\n" + self._obs_script())
         out = self.sh(script, timeout=180)
