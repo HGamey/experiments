@@ -2,7 +2,7 @@
 """gi_capture.py — 原神连续序列采集: 每档分辨率一段, 同一帧的带 UI 画面 + 灰层拷出的附件 (不带 UI、深度等), 转成数据集文件。
 
     python3 -I dataset/gi_capture.py <serial> --scene <场景标签> --so <层> --att <规则> \\
-        [--tiers 1920x1080,1280x720,960x540] [--frames 300] [--motion run|turn|static] [--walk-s 0] [--pull all|meta]
+        [--tiers 1920x1080,1280x720,960x540] [--frames 300] [--motion run|turn|static] [--walk-s 0] [--angle 0] [--pull all|meta]
 平台上 (--so 是本机文件, pf-node 自动上传):
     pf-node --experiment <提交> --research <研究ID> --resource device:<serial> --detach \\
       experiment dataset/gi_capture.py <serial> --scene beach_day --so <层> --att noui=ac24d328:0,depth=0ed8a53d:3
@@ -128,6 +128,7 @@ def main():
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--motion", default="run", choices=("run", "turn", "static"))
     ap.add_argument("--walk-s", type=float, default=0, help="第一档开采前推着摇杆走这么多秒 (换地方)")
+    ap.add_argument("--angle", type=float, default=0, help="run 和 --walk-s 的摇杆方向, 度: 0 正前, 180 正后, 90 向右")
     ap.add_argument("--slots", type=int, default=16)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--keep-raw", action="store_true")
@@ -197,13 +198,13 @@ def main():
                     raise RuntimeError("没进世界")
                 time.sleep(10)
                 if n == 0 and a.walk_s > 0:
-                    with Mover(a.serial, "run", size):
+                    with Mover(a.serial, "run", size, a.angle):
                         time.sleep(a.walk_s)
                     time.sleep(2)
                 gi_enter.save_png(a.serial, os.path.join(tdir, "shot.png"))
                 t["temps_before"] = temps(dev, "before")
                 t["data_free_before"] = data_free(dev)
-                with Mover(a.serial, a.motion, size):
+                with Mover(a.serial, a.motion, size, a.angle):
                     time.sleep(2.0)
                     t0 = time.time()
                     dev.shell(f"setprop debug.knobs.framedump_go {label}")

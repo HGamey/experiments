@@ -58,9 +58,10 @@ def pull_bytes(serial, path, timeout=300):
 class Mover:
     """后台按运动类型给输入, stop() 结束并松手。
     size: 当前逻辑横屏尺寸 (宽, 高)。input 注入用的是 wm size 覆盖后的逻辑坐标, 不传就按物理 2688x1216 算。"""
-    def __init__(self, serial, motion, size=None):
+    def __init__(self, serial, motion, size=None, angle=0.0):
         self.serial, self.motion, self.stop_ev = serial, motion, threading.Event()
         self.w, self.h = size or (W, H)
+        self.angle = math.radians(angle)   # run 的摇杆方向: 0 正前, 180 正后, 90 向右
         self.t = threading.Thread(target=self.run, daemon=True)
 
     def sh(self, cmd):
@@ -79,7 +80,7 @@ class Mover:
             self.sh(f"input motionevent DOWN {x0} {y0}")
             k = 0
             while not self.stop_ev.is_set():
-                ang = (0.0, -0.52, 0.0, 0.52)[k % 4]   # 弧度, 0 = 正前
+                ang = self.angle + (0.0, -0.52, 0.0, 0.52)[k % 4]   # 弧度, 0 = 正前
                 self.sh(f"input motionevent MOVE {x0 + int(r * math.sin(ang))} {y0 - int(r * math.cos(ang))}")
                 k += 1
                 self.stop_ev.wait(3)
