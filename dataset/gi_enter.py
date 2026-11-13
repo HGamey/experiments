@@ -2,6 +2,7 @@
 
 判据只有一个: 角色血条左段是绿色 (原神 7.2, 横屏比例坐标 x=0.43..0.46, y=0.918, 实测 RGB 150,215,34)。
 没进世界就每 --tap-every 秒点一下屏幕中央: 门口「点击进入」点哪里都进; 资源下载页、白色加载页、世界里点中央都无害。
+只在前台窗口是游戏时才点 (红魔的游戏空间、系统弹窗会抢前台, 盲点会点进别的应用); 游戏不在前台就拉回来, 进程没了就重新启动 (最多 --relaunch 次)。
 截图用 screencap 的原始 RGBA (不解码 PNG), 一张 13 MB, 取几个像素。
 """
 import os
@@ -58,36 +59,58 @@ def save_png(serial, path):
     return path
 
 
-def enter_world(serial, pkg, cold=True, timeout=900, tap_every=6.0, first_tap_after=20.0, log=print, fail_png=None):
+def focus(serial):
+    out = subprocess.run(["adb", "-s", serial, "shell", "dumpsys window | grep -m1 mCurrentFocus"], capture_output=True, text=True,
+                         timeout=30, pass_fds=_lock_fds()).stdout
+    return out.strip()
+
+
+def enter_world(serial, pkg, cold=True, timeout=900, tap_every=6.0, first_tap_after=20.0, log=print, fail_png=None, relaunch=2):
     """冷启动 (cold) 或接着当前画面进世界。返回 (ok, 秒数, 点了几下)。连续两次看到血条才算进了。"""
     sh = lambda c: subprocess.run(["adb", "-s", serial, "shell", c], capture_output=True, text=True, timeout=60,
                                   pass_fds=_lock_fds()).stdout
+    launch = lambda: sh(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
     t0 = time.time()
     sh("input keyevent KEYCODE_WAKEUP")
     if cold:
         sh(f"am force-stop {pkg}")
         time.sleep(1)
-        sh(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
+        launch()
     elif not sh(f"pidof {pkg}").strip():
-        sh(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
-    seen, taps, last_tap = 0, 0, 0.0
+        launch()
+    seen, taps, last_tap, launches, away = 0, 0, 0.0, 0, 0
     while time.time() - t0 < timeout:
         time.sleep(2)
+        f = focus(serial)
+        if pkg not in f:
+            away += 1
+            if away % 3 == 0:   # 连续 6 秒不在前台: 进程还在就拉回前台, 没了就重启
+                alive = bool(sh(f"pidof {pkg}").strip())
+                if not alive:
+                    if launches >= relaunch:
+                        log(f"游戏进程没了, 已重启 {launches} 次, 放弃 (前台: {f[-120:]})")
+                        break
+                    launches += 1
+                log(f"前台不是游戏 ({f[-100:]}), {'拉回前台' if alive else '重新启动'}")
+                sh("input keyevent KEYCODE_BACK") if "Picker" in f or "photopicker" in f.lower() else None
+                launch()
+            seen = 0
+            continue
+        away = 0
         shot = raw_shot(serial)
         if in_world(shot):
             seen += 1
             if seen >= 2:
-                log(f"进世界: {time.time() - t0:.0f} 秒, 点了 {taps} 下")
+                log(f"进世界: {time.time() - t0:.0f} 秒, 点了 {taps} 下, 重启 {launches} 次")
                 return True, round(time.time() - t0, 1), taps
             continue
         seen = 0
         if time.time() - t0 >= first_tap_after and time.time() - last_tap >= tap_every and shot:
             w, h, _ = shot
-            cx, cy = (w // 2, h // 2)
-            sh(f"input tap {cx} {cy}")
+            sh(f"input tap {w // 2} {h // 2}")
             taps += 1
             last_tap = time.time()
     if fail_png:
         save_png(serial, fail_png)
-    log(f"{timeout} 秒内没进世界, 点了 {taps} 下")
+    log(f"{timeout} 秒内没进世界, 点了 {taps} 下, 前台: {focus(serial)[-120:]}")
     return False, round(time.time() - t0, 1), taps
