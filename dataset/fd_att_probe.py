@@ -21,6 +21,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -67,21 +68,31 @@ class Mover:
                        timeout=60, pass_fds=lock_fds())
 
     def run(self):
+        """run: 只按住摇杆往前跑, 每 3 秒在正前、左前 30°、右前 30° 之间换方向 (别一直顶着墙);
+        turn: 只左右拖镜头; static: 不动, 每 2 秒点一下空白处保持 60 帧。
+        input 只有一个指针: 跑的同时再 swipe 拖镜头, 会把按住的摇杆顶掉, 所以两种不混在一起。"""
         W_, H_ = self.w, self.h
         x0, y0 = int(STICK[0] * W_), int(STICK[1] * H_)
         cy, cx = int(sum(CAM_Y) / 2 * H_), int(sum(CAM_X) / 2 * W_)
+        r = int(0.13 * H_)
         if self.motion == "run":
-            self.sh(f"input motionevent DOWN {x0} {y0}; input motionevent MOVE {x0} {y0 - int(0.13 * H_)}")
+            self.sh(f"input motionevent DOWN {x0} {y0}")
+            k = 0
+            while not self.stop_ev.is_set():
+                ang = (0.0, -0.52, 0.0, 0.52)[k % 4]   # 弧度, 0 = 正前
+                self.sh(f"input motionevent MOVE {x0 + int(r * math.sin(ang))} {y0 - int(r * math.cos(ang))}")
+                k += 1
+                self.stop_ev.wait(3)
+            self.sh(f"input motionevent UP {x0} {y0 - r}")
+            return
         side = 1
         while not self.stop_ev.is_set():
-            if self.motion in ("run", "turn"):
+            if self.motion == "turn":
                 self.sh(f"input swipe {cx} {cy} {cx + side * int(0.10 * W_)} {cy} 900")
                 side = -side
             else:   # static: 不点游戏 30 帧左右; 点空白处 (摇杆和按键之外) 保持 60 帧
                 self.sh(f"input tap {int(0.55 * W_)} {int(0.25 * H_)}")
                 self.stop_ev.wait(2)
-        if self.motion == "run":
-            self.sh(f"input motionevent UP {x0} {y0 - int(0.13 * H_)}")
 
     def __enter__(self):
         self.t.start()
