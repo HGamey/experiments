@@ -159,11 +159,11 @@ def main():
             att_cols = [c for c in (rows[0].keys() if rows else []) if c not in ("seq", "frame", "t_ns", "dt_ns", "gap_before", "file", "write_us")]
             res["att_present"] = {c: sum(1 for r in rows if r[c].endswith(".raw")) for c in att_cols}
             if pull_frames and rows:
-                good = [r for r in rows if r["file"].endswith(".raw") and all(r[c].endswith(".raw") for c in att_cols)]
+                good = [r for r in rows if r["file"].endswith(".raw")]   # 送显图在就拉, 附件有几个拉几个
                 mid = len(good) // 2
                 pick = good[mid:mid + pull_frames]
                 for r in pick:
-                    for f in [r["file"]] + [r[c] for c in att_cols]:
+                    for f in [r["file"]] + [r[c] for c in att_cols if r[c].endswith(".raw")]:
                         open(os.path.join(sdir, f), "wb").write(pull_bytes(a.serial, f"{seg}/{f}"))
                 res["pulled"] = [r["frame"] for r in pick]
         except Exception as e:
