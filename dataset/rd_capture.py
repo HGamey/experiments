@@ -10,7 +10,7 @@ rdtool 和库的来历见 dataset/rdtool/README.md (rdtool.cpp 用 NDK r28c 编�
 plugins/android/org.renderdoc.renderdoccmd.arm64.apk 里取)。手机要 root。
 
 步骤: 查 debug.vulkan.layers 为空 → 停游戏, 把层放进游戏的 lib/arm64 (system:system 755, apk_data_file) →
-setprop debug.vulkan.layers VK_LAYER_RENDERDOC_Capture → phonefarm onboard 冷启动进世界 → 核对 /proc/<pid>/maps 里有层,
+setprop debug.vulkan.layers VK_LAYER_RENDERDOC_Capture → gi_enter 冷启动进世界 (看血条, 不靠 OCR) → 核对 /proc/<pid>/maps 里有层,
 马上清空属性 → 推着摇杆走、转视角, rdtool cap 连续抓 --frames 帧 → 停游戏、摘层 →
 手机上 rdtool info (纹理、动作、render pass、创建参数) 和 rdtool passes (每个 pass 的输出与深度预览) → 拉回节点。
 .rdc 拉回节点一份 (--no-pull-rdc 不拉), 手机上留在 /data/local/tmp/rd/ 给后续 rdtool export 用 (--clean 删掉)。
@@ -41,6 +41,7 @@ if __name__ == "__main__" and not os.environ.get("PF_LOCK_FDS"):   # 整个脚�
 sys.path[:0] = [HERE, os.path.join(os.path.dirname(HERE), "selfsr")]   # -I 不带脚本目录
 import selfsr_ab as ab  # noqa: E402
 from cruise import CAM_X, CAM_Y, STICK, lock_fds  # noqa: E402
+import gi_enter  # noqa: E402
 
 LAYER = "libVkLayer_GLES_RenderDoc.so"
 RD = "/data/local/tmp/rd"
@@ -88,6 +89,7 @@ def main():
     ap.add_argument("--no-pull-rdc", action="store_true")
     ap.add_argument("--clean", action="store_true", help="结束时删掉手机上的 /data/local/tmp/rd")
     ap.add_argument("--settle", type=int, default=20, help="进世界后等多少秒再抓")
+    ap.add_argument("--enter-timeout", type=int, default=900, help="冷启动到进世界最多等多少秒 (含资源下载)")
     a = ap.parse_args()
     sw, sh = (int(x) for x in a.screen.split("x"))
     out = os.path.join(os.environ.get("PF_JOB_OUT") or os.path.join(ROOT, "_runs"), f"rd_{time.strftime('%Y%m%d-%H%M%S')}")
@@ -131,16 +133,17 @@ def main():
         rec["layer_ls"] = dev.su(f"ls -lZ {libdir}/{LAYER}").strip()
         dev.su("setprop debug.vulkan.layers VK_LAYER_RENDERDOC_Capture; setprop debug.rdoc.IGNORE_LAYERS 0")
         step(f"层已放好: {rec['layer_ls']}")
-        code, err = ab.onboard(argparse.Namespace(phonefarm=PF, pkg=a.pkg, serial=a.serial), out, "enter", True)
-        rec["onboard"] = {"exit": code, "stderr": err}
+        okw, secs, taps = gi_enter.enter_world(a.serial, a.pkg, cold=True, timeout=a.enter_timeout, log=step,
+                                               fail_png=os.path.join(out, "shot_enter_fail.png"))
+        rec["enter"] = {"ok": okw, "seconds": secs, "taps": taps}
         pid = dev.shell(f"pidof {a.pkg}").strip().split()
         pid = pid[0] if pid else ""
         maps = dev.su(f"grep -c {LAYER} /proc/{pid}/maps").strip() if pid else "0"
         dev.su("setprop debug.vulkan.layers ''")   # 层已经在游戏进程里, 关掉全局属性免得别的应用也加载
         rec.update(game_pid=pid, layer_maps=maps)
         shot("shot_enter.png")
-        if code != 0:
-            raise RuntimeError(f"onboard exit {code}: {err[-300:]}")
+        if not okw:
+            raise RuntimeError(f"{secs} 秒内没进世界")
         if not pid or maps in ("", "0"):
             raise RuntimeError(f"层没加载上 (pid={pid}, maps={maps})")
         step(f"已进世界, pid {pid}, 层映射 {maps} 段; 等 {a.settle} 秒")
