@@ -49,7 +49,8 @@ W, H = 2688, 1216
 
 
 def pull_bytes(serial, path, timeout=300):
-    return subprocess.run(["adb", "-s", serial, "exec-out", f"su -c {shlex.quote('cat ' + shlex.quote(path))}"],
+    q = shlex.quote(path)
+    return subprocess.run(["adb", "-s", serial, "exec-out", f"su -c {shlex.quote(f'[ -f {q} ] && cat {q}')}"],
                           capture_output=True, timeout=timeout, pass_fds=lock_fds()).stdout
 
 
