@@ -21,6 +21,7 @@ depth=0ed8a53d:3 (G-buffer 深度 D24S8)。
 """
 import argparse
 import hashlib
+import signal
 import json
 import os
 import re
@@ -101,7 +102,22 @@ def enter(a, out, step):
     return {"how": "health_bar", "ok": ok, "seconds": secs, "taps": taps, "onboard_exit": code}
 
 
+def logical_landscape(dev):
+    """当前逻辑横屏尺寸: 有 wm size 覆盖就用覆盖值, 否则物理尺寸; 长边当宽。"""
+    o = dev.shell("wm size")
+    m = re.search(r"Override size: (\d+)x(\d+)", o) or re.search(r"Physical size: (\d+)x(\d+)", o)
+    a, b = int(m.group(1)), int(m.group(2))
+    return max(a, b), min(a, b)
+
+
 def main():
+    # 平台取消任务先发 SIGINT 再升级: 第一次收到就忽略后续信号并转成 SystemExit, 让每档的 finally 和最后的收尾跑完
+    def stop(sig, _frame):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise SystemExit(128 + sig)
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
     ap = argparse.ArgumentParser()
     ap.add_argument("serial")
     ap.add_argument("--pkg", default="com.miHoYo.Yuanshen")
@@ -138,121 +154,125 @@ def main():
         step(f"手机上已有层/knobs/wm size 覆盖, 不动: {rec['before']}")
         return 1
     base = f"/data/data/{a.pkg}/files/i3dump"
-    for n, tier in enumerate(a.tiers.split(",")):
-        tdir = os.path.join(out, tier)
-        os.makedirs(tdir)
-        t = {"tier": tier}
-        rec["tiers"].append(t)
-        proc, sdir = None, os.path.join(tdir, "session")
-        label = f"{a.scene}_{tier}_{int(time.time())}"
-        seg = f"{base}/{label}"
-        try:
-            dev.shell("input keyevent KEYCODE_WAKEUP; am kill-all")
-            dev.shell(f"am force-stop {a.pkg}")
-            if tier == "native":
-                dev.shell("wm size reset")
-            else:
-                w, h = (int(v) for v in tier.split("x"))
-                dev.shell(f"wm size {h}x{w}")
-            time.sleep(2)
-            t["wm_size"] = dev.shell("wm size").strip()
-            props = {"debug.knobs.framedump": "1", "debug.knobs.framedump_n": str(a.frames), "debug.knobs.framedump_att": a.att,
-                     "debug.knobs.framedump_slots": str(a.slots)}
-            dev.shell("; ".join(f"setprop {k} {shlex.quote(v)}" for k, v in props.items()))
-            proc = subprocess.Popen([PF, "gray-layer", "session", "--mode", "probe", "--package", a.pkg, "--serial", a.serial,
-                                     "--out", sdir, "--max-seconds", str(int(max(1800, a.frames / 20 + 1200))), "--so", a.so],
-                                    stdout=open(sdir + ".log", "w"), stderr=subprocess.STDOUT, env=ab.SESSION_ENV, pass_fds=lock_fds())
-            phase = None
-            for _ in range(300):
+    try:
+        for n, tier in enumerate(a.tiers.split(",")):
+            tdir = os.path.join(out, tier)
+            os.makedirs(tdir)
+            t = {"tier": tier}
+            rec["tiers"].append(t)
+            proc, sdir = None, os.path.join(tdir, "session")
+            label = f"{a.scene}_{tier}_{int(time.time())}"
+            seg = f"{base}/{label}"
+            try:
+                dev.shell("input keyevent KEYCODE_WAKEUP; am kill-all")
+                dev.shell(f"am force-stop {a.pkg}")
+                if tier == "native":
+                    dev.shell("wm size reset")
+                else:
+                    w, h = (int(v) for v in tier.split("x"))
+                    dev.shell(f"wm size {h}x{w}")
                 time.sleep(2)
-                if proc.poll() is not None:
-                    break
-                code, s = ab.pf_json(PF, "gray-layer", "session-status", "--out", sdir, "--json")
-                phase = s.get("phase") if code == 0 else None
-                if phase == "ready":
-                    break
-            if phase != "ready":
-                raise RuntimeError(f"session not ready (phase={phase}, exit={proc.poll()})")
-            t["enter"] = enter(a, tdir, step)
-            if not t["enter"]["ok"]:
-                raise RuntimeError("没进世界")
-            time.sleep(10)
-            if n == 0 and a.walk_s > 0:
-                with Mover(a.serial, "run"):
-                    time.sleep(a.walk_s)
-                time.sleep(2)
-            gi_enter.save_png(a.serial, os.path.join(tdir, "shot.png"))
-            t["temps_before"] = temps(dev, "before")
-            t["data_free_before"] = data_free(dev)
-            with Mover(a.serial, a.motion):
-                time.sleep(2.0)
-                t0 = time.time()
-                dev.shell(f"setprop debug.knobs.framedump_go {label}")
-                done = False
-                for _ in range(a.frames // 20 + 180):
-                    names = dev.su(f"ls {seg}/summary.json {seg}/refused.json 2>/dev/null")
-                    if "summary.json" in names or "refused.json" in names:
-                        done = "summary.json" in names
+                t["wm_size"] = dev.shell("wm size").strip()
+                size = logical_landscape(dev)
+                t["input_size"] = list(size)
+                props = {"debug.knobs.framedump": "1", "debug.knobs.framedump_n": str(a.frames), "debug.knobs.framedump_att": a.att,
+                         "debug.knobs.framedump_slots": str(a.slots)}
+                dev.shell("; ".join(f"setprop {k} {shlex.quote(v)}" for k, v in props.items()))
+                proc = subprocess.Popen([PF, "gray-layer", "session", "--mode", "probe", "--package", a.pkg, "--serial", a.serial,
+                                         "--out", sdir, "--max-seconds", str(int(max(1800, a.frames / 20 + 1200))), "--so", a.so],
+                                        stdout=open(sdir + ".log", "w"), stderr=subprocess.STDOUT, env=ab.SESSION_ENV, pass_fds=lock_fds())
+                phase = None
+                for _ in range(300):
+                    time.sleep(2)
+                    if proc.poll() is not None:
                         break
-                    time.sleep(1)
-                t["capture_wall_s"] = round(time.time() - t0, 2)
-            t["temps_after"] = temps(dev, "after")
-            t["data_free_after"] = data_free(dev)
-            gi_enter.save_png(a.serial, os.path.join(tdir, "shot_after.png"))
-            t["segment_finished"] = done
-            ab.session_action(PF, sdir, "stop")   # 读回时游戏不用开着, 手机少发热
-            proc.wait(timeout=300)
-            dev.shell(f"am force-stop {a.pkg}")
-            t0 = time.time()
-            if a.pull == "all":
-                ok = pull_tar(a.serial, seg, tdir)
-            else:
-                ok = pull_some(a.serial, seg, tdir, ["session.json", "summary.json", "index.csv", "refused.json"])
-                import csv
-                got = [r["frame"].zfill(10) for r in csv.DictReader(open(os.path.join(tdir, "index.csv"))) if r["file"].endswith(".raw")]
-                pick = sorted({got[0], got[len(got) // 2], got[-1]}) if got else []
-                names = dev.su(f"ls {seg}").split()
-                ok = pull_some(a.serial, seg, tdir, [n for n in names if any(n.startswith(f"f{fr}") for fr in pick)]) and ok
-            t["pull_s"] = round(time.time() - t0, 1)
-            t["pull_bytes"] = sum(os.path.getsize(os.path.join(tdir, f)) for f in os.listdir(tdir) if f.endswith(".raw"))
-            t["pull_ok"] = ok
-            summ = json.load(open(os.path.join(tdir, "summary.json")))
-            sess = json.load(open(os.path.join(tdir, "session.json")))
-            t["present"] = {"w": sess["w"], "h": sess["h"], "vk_format": sess["vk_format"]}
-            t["summary"] = {k: summ.get(k) for k in ("captured", "dropped_slot_busy", "skipped_other", "span_s", "bytes", "write_us_max")}
-            t["att"] = summ.get("att")
-            t["seq"] = seq_stats(os.path.join(tdir, "index.csv"))
-            t0 = time.time()
-            t["convert"] = fd_convert.convert_segment(tdir, a.workers, delete_raw=not a.keep_raw)
-            t["convert_s"] = round(time.time() - t0, 1)
-            k = max(1, t["convert"]["frames"]) / 100
-            kc = max(1, summ.get("captured") or 0) / 100
-            t["per_100_frames_s"] = {"capture": round(summ.get("span_s", 0) / kc, 2),
-                                     "pull": round(t["pull_s"] / k, 1) if a.pull == "all" else None,
-                                     "convert": round(t["convert_s"] / k, 1) if a.pull == "all" else None}
-            t["disk_bytes"] = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(tdir) for f in fs)
-            step(f"{tier}: 送显 {sess['w']}x{sess['h']}, 采 {summ.get('captured')} 帧, 完整 {t['convert']['complete']}, "
-                 f"读回 {t['pull_s']} 秒 / {t['pull_bytes'] / 1e9:.2f} GB, 转换 {t['convert_s']} 秒")
-        except Exception as e:
-            t["error"] = f"{type(e).__name__}: {e}"
-            step(f"{tier}: {t['error']}")
-        finally:
-            if proc and proc.poll() is None:
-                ab.session_action(PF, sdir, "stop")
-            if proc:
-                try:
-                    proc.wait(timeout=300)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-                    proc.wait(timeout=60)
-            dev.shell(f"am force-stop {a.pkg}")
-            dev.su(f"rm -rf {base}")
-            for k2 in re.findall(r"^\[(debug\.knobs\.[^\]]+)\]: \[.+\]$", dev.shell("getprop"), re.M):
-                dev.shell(f"setprop {k2} ''")
-    dev.shell("wm size reset")
-    dev.shell("input keyevent KEYCODE_HOME")
-    if rec["before"]["wakefulness"] != "Awake":
-        dev.shell("input keyevent KEYCODE_SLEEP")
+                    code, s = ab.pf_json(PF, "gray-layer", "session-status", "--out", sdir, "--json")
+                    phase = s.get("phase") if code == 0 else None
+                    if phase == "ready":
+                        break
+                if phase != "ready":
+                    raise RuntimeError(f"session not ready (phase={phase}, exit={proc.poll()})")
+                t["enter"] = enter(a, tdir, step)
+                if not t["enter"]["ok"]:
+                    raise RuntimeError("没进世界")
+                time.sleep(10)
+                if n == 0 and a.walk_s > 0:
+                    with Mover(a.serial, "run", size):
+                        time.sleep(a.walk_s)
+                    time.sleep(2)
+                gi_enter.save_png(a.serial, os.path.join(tdir, "shot.png"))
+                t["temps_before"] = temps(dev, "before")
+                t["data_free_before"] = data_free(dev)
+                with Mover(a.serial, a.motion, size):
+                    time.sleep(2.0)
+                    t0 = time.time()
+                    dev.shell(f"setprop debug.knobs.framedump_go {label}")
+                    done = False
+                    for _ in range(a.frames // 20 + 180):
+                        names = dev.su(f"ls {seg}/summary.json {seg}/refused.json 2>/dev/null")
+                        if "summary.json" in names or "refused.json" in names:
+                            done = "summary.json" in names
+                            break
+                        time.sleep(1)
+                    t["capture_wall_s"] = round(time.time() - t0, 2)
+                t["temps_after"] = temps(dev, "after")
+                t["data_free_after"] = data_free(dev)
+                gi_enter.save_png(a.serial, os.path.join(tdir, "shot_after.png"))
+                t["segment_finished"] = done
+                ab.session_action(PF, sdir, "stop")   # 读回时游戏不用开着, 手机少发热
+                proc.wait(timeout=300)
+                dev.shell(f"am force-stop {a.pkg}")
+                t0 = time.time()
+                if a.pull == "all":
+                    ok = pull_tar(a.serial, seg, tdir)
+                else:
+                    ok = pull_some(a.serial, seg, tdir, ["session.json", "summary.json", "index.csv", "refused.json"])
+                    import csv
+                    got = [r["frame"].zfill(10) for r in csv.DictReader(open(os.path.join(tdir, "index.csv"))) if r["file"].endswith(".raw")]
+                    pick = sorted({got[0], got[len(got) // 2], got[-1]}) if got else []
+                    names = dev.su(f"ls {seg}").split()
+                    ok = pull_some(a.serial, seg, tdir, [n for n in names if any(n.startswith(f"f{fr}") for fr in pick)]) and ok
+                t["pull_s"] = round(time.time() - t0, 1)
+                t["pull_bytes"] = sum(os.path.getsize(os.path.join(tdir, f)) for f in os.listdir(tdir) if f.endswith(".raw"))
+                t["pull_ok"] = ok
+                summ = json.load(open(os.path.join(tdir, "summary.json")))
+                sess = json.load(open(os.path.join(tdir, "session.json")))
+                t["present"] = {"w": sess["w"], "h": sess["h"], "vk_format": sess["vk_format"]}
+                t["summary"] = {k: summ.get(k) for k in ("captured", "dropped_slot_busy", "skipped_other", "span_s", "bytes", "write_us_max")}
+                t["att"] = summ.get("att")
+                t["seq"] = seq_stats(os.path.join(tdir, "index.csv"))
+                t0 = time.time()
+                t["convert"] = fd_convert.convert_segment(tdir, a.workers, delete_raw=not a.keep_raw)
+                t["convert_s"] = round(time.time() - t0, 1)
+                k = max(1, t["convert"]["frames"]) / 100
+                kc = max(1, summ.get("captured") or 0) / 100
+                t["per_100_frames_s"] = {"capture": round(summ.get("span_s", 0) / kc, 2),
+                                         "pull": round(t["pull_s"] / k, 1) if a.pull == "all" else None,
+                                         "convert": round(t["convert_s"] / k, 1) if a.pull == "all" else None}
+                t["disk_bytes"] = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(tdir) for f in fs)
+                step(f"{tier}: 送显 {sess['w']}x{sess['h']}, 采 {summ.get('captured')} 帧, 完整 {t['convert']['complete']}, "
+                     f"读回 {t['pull_s']} 秒 / {t['pull_bytes'] / 1e9:.2f} GB, 转换 {t['convert_s']} 秒")
+            except Exception as e:
+                t["error"] = f"{type(e).__name__}: {e}"
+                step(f"{tier}: {t['error']}")
+            finally:
+                if proc and proc.poll() is None:
+                    ab.session_action(PF, sdir, "stop")
+                if proc:
+                    try:
+                        proc.wait(timeout=300)
+                    except subprocess.TimeoutExpired:
+                        proc.terminate()
+                        proc.wait(timeout=60)
+                dev.shell(f"am force-stop {a.pkg}")
+                dev.su(f"rm -rf {base}")
+                for k2 in re.findall(r"^\[(debug\.knobs\.[^\]]+)\]: \[.+\]$", dev.shell("getprop"), re.M):
+                    dev.shell(f"setprop {k2} ''")
+    finally:
+        dev.shell("wm size reset")
+        dev.shell("input keyevent KEYCODE_HOME")
+        if rec["before"]["wakefulness"] != "Awake":
+            dev.shell("input keyevent KEYCODE_SLEEP")
     time.sleep(2)
     layer_ok, info = ab.layer_absent(dev, a.pkg)
     rec["restore"] = {"focus": gi_enter.focus(a.serial)[-160:], "wm_size": dev.shell("wm size").strip(), "layer_removed": layer_ok,

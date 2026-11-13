@@ -55,9 +55,11 @@ def pull_bytes(serial, path, timeout=300):
 
 
 class Mover:
-    """后台按运动类型给输入, stop() 结束并松手。"""
-    def __init__(self, serial, motion):
+    """后台按运动类型给输入, stop() 结束并松手。
+    size: 当前逻辑横屏尺寸 (宽, 高)。input 注入用的是 wm size 覆盖后的逻辑坐标, 不传就按物理 2688x1216 算。"""
+    def __init__(self, serial, motion, size=None):
         self.serial, self.motion, self.stop_ev = serial, motion, threading.Event()
+        self.w, self.h = size or (W, H)
         self.t = threading.Thread(target=self.run, daemon=True)
 
     def sh(self, cmd):
@@ -65,20 +67,21 @@ class Mover:
                        timeout=60, pass_fds=lock_fds())
 
     def run(self):
-        x0, y0 = int(STICK[0] * W), int(STICK[1] * H)
-        cy, cx = int(sum(CAM_Y) / 2 * H), int(sum(CAM_X) / 2 * W)
+        W_, H_ = self.w, self.h
+        x0, y0 = int(STICK[0] * W_), int(STICK[1] * H_)
+        cy, cx = int(sum(CAM_Y) / 2 * H_), int(sum(CAM_X) / 2 * W_)
         if self.motion == "run":
-            self.sh(f"input motionevent DOWN {x0} {y0}; input motionevent MOVE {x0} {y0 - int(0.13 * H)}")
+            self.sh(f"input motionevent DOWN {x0} {y0}; input motionevent MOVE {x0} {y0 - int(0.13 * H_)}")
         side = 1
         while not self.stop_ev.is_set():
             if self.motion in ("run", "turn"):
-                self.sh(f"input swipe {cx} {cy} {cx + side * int(0.10 * W)} {cy} 900")
+                self.sh(f"input swipe {cx} {cy} {cx + side * int(0.10 * W_)} {cy} 900")
                 side = -side
             else:   # static: 不点游戏 30 帧左右; 点空白处 (摇杆和按键之外) 保持 60 帧
-                self.sh(f"input tap {int(0.55 * W)} {int(0.25 * H)}")
+                self.sh(f"input tap {int(0.55 * W_)} {int(0.25 * H_)}")
                 self.stop_ev.wait(2)
         if self.motion == "run":
-            self.sh(f"input motionevent UP {x0} {y0 - int(0.13 * H)}")
+            self.sh(f"input motionevent UP {x0} {y0 - int(0.13 * H_)}")
 
     def __enter__(self):
         self.t.start()
