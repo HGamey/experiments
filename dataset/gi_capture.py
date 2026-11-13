@@ -62,8 +62,9 @@ def pull_tar(serial, remote_dir, local_dir):
 def pull_some(serial, remote_dir, local_dir, names):
     """只拉列出的文件 (相对段目录)。"""
     os.makedirs(local_dir, exist_ok=True)
-    lst = " ".join(shlex.quote(n) for n in names)
-    p = subprocess.Popen(["adb", "-s", serial, "exec-out", f"su -c {shlex.quote(f'cd {remote_dir} && tar -cf - {lst} 2>/dev/null')}"],
+    lst = " ".join(shlex.quote(n) for n in names)   # 不存在的 (如没有 refused.json) 先滤掉, 否则 tar 返回非零
+    p = subprocess.Popen(["adb", "-s", serial, "exec-out",
+                          f"su -c {shlex.quote(f'cd {remote_dir} && tar -cf - $(ls -d {lst} 2>/dev/null)')}"],
                          stdout=subprocess.PIPE, pass_fds=lock_fds())
     t = subprocess.run(["tar", "-C", local_dir, "-xf", "-"], stdin=p.stdout, timeout=1800)
     p.wait(timeout=120)
