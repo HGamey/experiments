@@ -1,6 +1,8 @@
 """fd_convert.py — framedump 原始帧 (送显图 + framedump_att 附件) 转成数据集文件, 并逐帧检查。只用标准库。
 
 输入: 一段的目录 (session.json, summary.json, index.csv, f<帧号>.raw, f<帧号>_<附件>.raw)。
+附件默认上下翻转后再存: 原神 (Unity, Vulkan) 渲染到中间目标时是倒的, 送显合成时才翻回来;
+翻得对不对看 checks.csv 的 noui_vs_ui_med (翻对了只有零点几, 翻错了是几十)。别的游戏用 --no-flip。
 输出 (同目录下):
   ui/f<帧号>.png        送显图, 带 UI, RGB8 (原始 RGBA8 去掉 alpha: 原神的 alpha 不是 255)
   <附件>/f<帧号>.png    颜色附件 (RGBA8/BGRA8) 去 alpha 存 RGB8
@@ -37,6 +39,12 @@ def png_bytes(w, h, color_type, bit_depth, pixels, channels, level=6):
             + chunk(b"IDAT", zlib.compress(bytes(raw), level)) + chunk(b"IEND", b""))
 
 
+def flip_rows(b, w, h, bpp):
+    """按行倒序 (上下翻转)。"""
+    stride = w * bpp
+    return b"".join(b[(h - 1 - y) * stride:(h - y) * stride] for y in range(h))
+
+
 def rgb_from_rgba(raw, order="rgba"):
     n = len(raw) // 4
     rgb = bytearray(n * 3)
@@ -63,7 +71,7 @@ def depth24_from_d24(raw):
 
 def convert_one(job):
     """(段目录, 帧号字符串, 附件表) -> 写好的文件和几个统计量; 在子进程里跑。"""
-    d, fr, ui_wh, atts = job
+    d, fr, ui_wh, atts, flip = job
     res = {"frame": fr}
     raw = open(os.path.join(d, f"f{fr}.raw"), "rb").read()
     w, h = ui_wh
@@ -81,6 +89,8 @@ def convert_one(job):
         if len(b) != aw * ah * a["bytes_per_pixel"]:
             res[name] = "BAD_SIZE"
             continue
+        if flip:
+            b = flip_rows(b, aw, ah, a["bytes_per_pixel"])
         if f in COLOR8:
             c = rgb_from_rgba(b, COLOR8[f])
             os.makedirs(os.path.join(d, name), exist_ok=True)
@@ -118,13 +128,13 @@ def med_absdiff(a, b):
     return v[len(v) // 2]
 
 
-def convert_segment(d, workers=4, delete_raw=False):
+def convert_segment(d, workers=4, delete_raw=False, flip=True):
     s = json.load(open(os.path.join(d, "session.json")))
     summ = json.load(open(os.path.join(d, "summary.json")))
     atts = {r["name"]: r for r in ((summ.get("att") or {}).get("rules") or []) if r.get("w")}
     rows = list(csv.DictReader(open(os.path.join(d, "index.csv"))))
     frames = [r["frame"].zfill(10) for r in rows if r["file"].endswith(".raw")]
-    jobs = [(d, fr, (s["w"], s["h"]), atts) for fr in frames]
+    jobs = [(d, fr, (s["w"], s["h"]), atts, flip) for fr in frames]
     with ProcessPoolExecutor(max_workers=workers) as ex:
         res = list(ex.map(convert_one, jobs, chunksize=4))
     by = {r["frame"]: r for r in res}
@@ -153,7 +163,9 @@ def convert_segment(d, workers=4, delete_raw=False):
                 if os.path.exists(q):
                     os.remove(q)
     complete = sum(1 for r in out_rows if r["ui"] == "ok" and all(r[n] == "ok" for n in atts))
-    return {"frames": len(frames), "complete": complete, "atts": {n: {k: a[k] for k in ("vk_format", "w", "h", "bytes_per_pixel")} for n, a in atts.items()}}
+    meds = sorted(r["noui_vs_ui_med"] for r in out_rows if isinstance(r["noui_vs_ui_med"], int))
+    return {"frames": len(frames), "complete": complete, "flip": flip,
+            "noui_vs_ui_med_p50": meds[len(meds) // 2] if meds else None, "atts": {n: {k: a[k] for k in ("vk_format", "w", "h", "bytes_per_pixel")} for n, a in atts.items()}}
 
 
 if __name__ == "__main__":
@@ -161,5 +173,6 @@ if __name__ == "__main__":
     ap.add_argument("dir")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--delete-raw", action="store_true")
+    ap.add_argument("--no-flip", action="store_true")
     a = ap.parse_args()
-    print(json.dumps(convert_segment(a.dir, a.workers, a.delete_raw), ensure_ascii=False))
+    print(json.dumps(convert_segment(a.dir, a.workers, a.delete_raw, not a.no_flip), ensure_ascii=False))
