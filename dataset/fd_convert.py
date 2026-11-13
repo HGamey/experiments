@@ -133,7 +133,8 @@ def convert_segment(d, workers=4, delete_raw=False, flip=True):
     summ = json.load(open(os.path.join(d, "summary.json")))
     atts = {r["name"]: r for r in ((summ.get("att") or {}).get("rules") or []) if r.get("w")}
     rows = list(csv.DictReader(open(os.path.join(d, "index.csv"))))
-    frames = [r["frame"].zfill(10) for r in rows if r["file"].endswith(".raw")]
+    frames = [r["frame"].zfill(10) for r in rows
+              if r["file"].endswith(".raw") and os.path.exists(os.path.join(d, "f%s.raw" % r["frame"].zfill(10)))]
     jobs = [(d, fr, (s["w"], s["h"]), atts, flip) for fr in frames]
     with ProcessPoolExecutor(max_workers=workers) as ex:
         res = list(ex.map(convert_one, jobs, chunksize=4))
