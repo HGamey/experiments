@@ -122,7 +122,7 @@ def main():
     ap.add_argument("serial")
     ap.add_argument("--pkg", default="com.miHoYo.Yuanshen")
     ap.add_argument("--scene", required=True)
-    ap.add_argument("--so", required=True)
+    ap.add_argument("--so", help="自己编的层 (本机文件, pf-node 自动上传); 不给就用平台自带的层")
     ap.add_argument("--att", required=True)
     ap.add_argument("--tiers", default="1920x1080,1280x720,960x540")
     ap.add_argument("--frames", type=int, default=300)
@@ -138,7 +138,7 @@ def main():
     os.makedirs(out)
     dev = ab.Dev(a.serial)
     rec = {"scene": a.scene, "pkg": a.pkg, "att": a.att, "frames": a.frames, "motion": a.motion, "tiers": [], "steps": [],
-           "experiment_commit": os.environ.get("PF_EXPERIMENT_COMMIT"), "so_sha256": hashlib.sha256(open(a.so, "rb").read()).hexdigest()}
+           "experiment_commit": os.environ.get("PF_EXPERIMENT_COMMIT"), "so_sha256": hashlib.sha256(open(a.so, "rb").read()).hexdigest() if a.so else None}
 
     def step(msg):
         rec["steps"].append({"t": round(time.time(), 1), "msg": msg})
@@ -180,7 +180,8 @@ def main():
                          "debug.knobs.framedump_slots": str(a.slots)}
                 dev.shell("; ".join(f"setprop {k} {shlex.quote(v)}" for k, v in props.items()))
                 proc = subprocess.Popen([PF, "gray-layer", "session", "--mode", "probe", "--package", a.pkg, "--serial", a.serial,
-                                         "--out", sdir, "--max-seconds", str(int(max(1800, a.frames / 20 + 1200))), "--so", a.so],
+                                         "--out", sdir, "--max-seconds", str(int(max(1800, a.frames / 20 + 1200)))]
+                                    + (["--so", a.so] if a.so else []),
                                         stdout=open(sdir + ".log", "w"), stderr=subprocess.STDOUT, env=ab.SESSION_ENV, pass_fds=lock_fds())
                 phase = None
                 for _ in range(300):
