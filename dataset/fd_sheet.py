@@ -103,15 +103,15 @@ def main():
         rows.append((f, row))
     res = {"dir": a.dir, "frames": pick}
     if a.mv_check and os.path.isdir(os.path.join(a.dir, "mv")):
+        have = lambda f: all(os.path.exists(os.path.join(a.dir, sub, f"f{f:010d}.png")) for sub in ("noui", "mv"))
         mid = len(ids) // 2
-        seq = ids[mid:mid + a.mv_check + 1]
         pairs = []
-        for p, c in zip(seq, seq[1:]):
-            if c != p + 1:
+        for p, c in zip(ids[mid:], ids[mid + 1:]):   # 从中间往后找有 PNG 的连续帧 (只下载了一部分时也能用)
+            if len(pairs) >= a.mv_check:
+                break
+            if c != p + 1 or not (have(p) and have(c)):
                 continue
             a0, a1, mv = png(a.dir, "noui", p), png(a.dir, "noui", c), png(a.dir, "mv", c)
-            if a0 is None or a1 is None or mv is None:
-                continue
             vx, vy, obj = mv_decode(mv)
             e0, e1 = warp_err(gray(a0), gray(a1), vx, vy, ~obj)
             pairs.append({"prev": p, "cur": c, "err_no_warp": round(e0, 2), "err_mv_warp": round(e1, 2),
