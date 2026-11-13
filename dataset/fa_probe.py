@@ -126,11 +126,12 @@ def main():
             dev.shell(f"setprop {k} ''")
         if a.wm_size:
             dev.shell("wm size reset")
+        dev.shell("input keyevent KEYCODE_HOME")   # 清掉游戏空间、弹窗等残留界面
         if rec["before"]["wakefulness"] != "Awake":
             dev.shell("input keyevent KEYCODE_SLEEP")
         time.sleep(2)
         layer_ok, info = ab.layer_absent(dev, a.pkg)
-        rec["restore"] = {"wm_size": dev.shell("wm size").strip(), "layer_removed": layer_ok, "layer_info": info,
+        rec["restore"] = {"focus": gi_enter.focus(a.serial)[-160:], "wm_size": dev.shell("wm size").strip(), "layer_removed": layer_ok, "layer_info": info,
                           "knobs_left": re.findall(r"^\[(debug\.knobs\.[^\]]+)\]: \[.+\]$", dev.shell("getprop"), re.M),
                           "game_running": bool(dev.shell(f"pidof {a.pkg}").strip())}
         rec["restore"]["ok"] = bool(layer_ok and not rec["restore"]["knobs_left"] and "Override" not in rec["restore"]["wm_size"]

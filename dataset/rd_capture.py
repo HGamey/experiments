@@ -208,10 +208,11 @@ def main():
         dev.su(f"rm -rf {RD}/out")
     for c in rec["captures"]:   # 游戏自己目录里的原件
         dev.su(f"rm -f {shlex.quote(c['path'])}")
+    dev.shell("input keyevent KEYCODE_HOME")   # 清掉游戏空间、弹窗等残留界面
     if rec["before"]["wakefulness"] != "Awake":
         dev.shell("input keyevent KEYCODE_SLEEP")
     left = dev.su(f"ls {libdir} | grep -c {LAYER}").strip()
-    rec["restore"] = {"layer_in_libdir": left, "debug.vulkan.layers": dev.prop("debug.vulkan.layers"),
+    rec["restore"] = {"focus": gi_enter.focus(a.serial)[-160:], "layer_in_libdir": left, "debug.vulkan.layers": dev.prop("debug.vulkan.layers"),
                       "game_running": bool(dev.shell(f"pidof {a.pkg}").strip()),
                       "rd_dir_left": dev.su(f"ls {RD} 2>/dev/null").split()}
     rec["restore"]["ok"] = left in ("0", "") and rec["restore"]["debug.vulkan.layers"] == "" and not rec["restore"]["game_running"]
