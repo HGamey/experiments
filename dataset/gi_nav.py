@@ -305,6 +305,7 @@ class Runner:
         self.sweeping = sweep_every > 0     # 自动摆镜头开关; 摆法 +a, -2a, +2a, ... 让朝向在均值两侧对称摆
         self.offset, self.swiping, self.last_end = 0.0, False, 0.0
         self.force_sprint = False          # 采集段内一直按住冲刺 (段短, 体力够)
+        self.repress = False               # 置 True: 冲刺键松开再按 (爬墙 / 撞停打断冲刺后, 一直按着不会重新冲起来)
 
     def stick_point(self, a):
         r = STICK_R
@@ -382,6 +383,13 @@ class Runner:
                     swipe, self.swiping, self.last_end = None, False, time.time()
             if self.sprint_on > 0 or self.force_sprint:
                 want = self.force_sprint or ((now - self.t0) % self.sprint_period) < self.sprint_on
+                if self.repress:
+                    self.repress = False
+                    if btn:
+                        t.up(SLOT_BTN)
+                        btn = False
+                        time.sleep(1.0 / self.hz)
+                        continue
                 if want and not btn:
                     t.down(SLOT_BTN, *SPRINT)
                 elif btn and not want:
@@ -548,9 +556,12 @@ class Navigator:
         self.seg_stop = threading.Event()
 
         def loop():
-            t_end, gain = time.time() + secs, self.gain or 700.0
+            t_end, gain, k = time.time() + secs, self.gain or 700.0, 0
             while not self.seg_stop.is_set() and time.time() < t_end:
                 t1 = time.time()
+                k += 1
+                if k % 2 == 0:
+                    self.runner.repress = True
                 self.runner.turn(per_s * self.circle_dir, 0.9)
                 shot = gi_enter.raw_shot(self.s)
                 st = hud(shot)["state"] if shot else None
@@ -558,6 +569,7 @@ class Navigator:
                     if st == "other":
                         self.tap(ATTACK)
                     self.runner.turn(120 * self.circle_dir / gain, 0.5)
+                    self.runner.repress = True
                     self.seg_log.append({"t": round(t1 - self.t0, 1), "state": st})
                 self.seg_stop.wait(max(0.0, 1.0 - (time.time() - t1)))
         self.seg_th = threading.Thread(target=loop, daemon=True)
