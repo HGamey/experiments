@@ -690,6 +690,17 @@ class Navigator:
             while time.time() < t2:
                 last = self.check()
                 time.sleep(1.0)
+        # 再确认开段时是正常状态 (攻击键是剑): 画面在动也可能是在爬墙, 爬墙就落下、转开、再跑几秒
+        for _ in range(3):
+            st = self.read()
+            out.setdefault("pre_state", []).append(st["state"] if st else None)
+            if not st or st["state"] == "normal":
+                break
+            self.recover(st["state"], st["heading"])
+            t2 = time.time() + 3.0
+            while time.time() < t2:
+                last = self.check()
+                time.sleep(1.0)
         out["last"] = last
         return out
 
