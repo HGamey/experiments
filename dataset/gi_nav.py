@@ -426,6 +426,21 @@ ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时是「落下」
 INTERACT = (0.63, 0.50)     # 交互提示 (对话 / 调查) 出现在角色右侧
 DIALOG_TAP = (0.75, 0.63)   # 对话里点这里: 普通对话点哪都翻页, 有选项时正好落在选项列表上
 REVIVE = (0.50, 0.89)       # 摔死 / 淹死后的「复苏」按钮 (对话里点这里也只是翻页)
+RETURN_BTN = (0.33, 0.50)   # 离开任务区域时左侧出现的「返回任务点」, 右端是黄色圆形 ! (0.401, 0.499)
+
+
+def return_button(shot):
+    """有「返回任务点」按钮就返回 True: (0.38–0.42, 0.47–0.53) 里黄色 (r>200, g>150, b<80) 像素够多。"""
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    n = tot = 0
+    st = max(1, int(H / 540))
+    for y in range(int(0.47 * H), int(0.53 * H), st):
+        for x in range(int(0.38 * W), int(0.42 * W), st):
+            r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
+            tot += 1
+            n += r > 200 and g > 150 and b < 80
+    return tot > 0 and n / tot > 0.12
 
 
 class Navigator:
@@ -502,11 +517,9 @@ class Navigator:
                 g.append(ang_diff(cur["heading"], prev["heading"]) / d)
             prev = cur
         r.resume()
-        pos = [x for x in g if x > 0]
-        neg = [x for x in g if x < 0]
-        big = pos if len(pos) > len(neg) else neg if len(neg) > len(pos) else []
-        if big and 150 <= sorted(abs(x) for x in big)[len(big) // 2] <= 2500:
-            self.gain = (1 if big is pos else -1) * sorted(abs(x) for x in big)[len(big) // 2]
+        # 符号固定为正 (向右拖朝向变大, 多次会话一致); 爬坡、撞树时样本会乱, 只取正样本的中位数, 夹在 450–1100
+        pos = sorted(x for x in g if x > 0)
+        self.gain = min(1100.0, max(450.0, pos[len(pos) // 2])) if pos else 700.0
         self.cal = {"samples": [round(x) for x in g], "gain": self.gain}
         self.log(f"镜头增益标定: {self.cal}")
         return self.cal
@@ -669,7 +682,16 @@ def story(a):
                     nav.runner.resume()
                     mm, hd = minimap(shot), hud(shot)
                     e.update(heading=mm["heading"], quest=[mm["quest_bearing"], mm["quest_dist"]], state=hd["state"])
-                    gain = nav.gain or 800.0
+                    gain = nav.gain or 700.0
+                    if return_button(shot):
+                        nav.runner.pause()
+                        nav.tap(RETURN_BTN)
+                        e["act"] = "return_to_quest"
+                        rec["log"].append(e)
+                        time.sleep(4)
+                        gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_r.png"))
+                        last_png, k = time.time(), k + 1
+                        continue
                     if hd["state"] != "normal":
                         odd_since = odd_since or t1
                         if t1 - odd_since > (15 if hd["state"] == "swim" else 8) and t1 >= nav.quiet_until:
