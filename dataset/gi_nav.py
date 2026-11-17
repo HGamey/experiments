@@ -470,7 +470,8 @@ class Navigator:
     采集段内不截图 (截图会打断合成), Runner 照跑。"""
 
     def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=1.5,
-                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720, inland=None, use_return=False):
+                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720, inland=None, use_return=False,
+                 circle_dps=None, calm_s=8.0):
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
         self.runner.sweeping = False        # gap 里只修方向; 采集段内才自动摆镜头 (segment_start / segment_end)
@@ -480,6 +481,8 @@ class Navigator:
         self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
         self.use_return = use_return        # 每个 gap 开头有「返回任务点」就传回去 (崖顶草地), 转身背对崖边再跑
         self.n_return, self.no_avoid_until = 0, 0.0
+        self.circle_dps = circle_dps        # 段内绕圈的转速, 度/秒 (按标定增益换成拖动量); None = 每秒拖 0.055 个画面宽
+        self.calm_s, self.last_bad = calm_s, 0.0   # gap 结束前要连续这么多秒没爬墙/游泳 (体力回满, 段内才冲得起来)
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
     def turn_standing(self, deg):
@@ -511,6 +514,12 @@ class Navigator:
         self.tap(RETURN_BTN)
         time.sleep(6)
         st = self.read()
+        for _ in range(6):                  # 传送途中摔了 (「坠落」/「复苏」页): 点复苏, 等回到世界
+            if st and st["world"]:
+                break
+            self.tap(REVIVE)
+            time.sleep(4)
+            st = self.read()
         h = st["heading"] if st else None
         off = (0, 40, -40, 70, -70)[self.n_return % 5]   # 每段换个出发方向, 别每段都是同一条路
         self.n_return += 1
@@ -531,8 +540,10 @@ class Navigator:
             self.runner.start_sweeps()
             return
         self.circle_dir = -getattr(self, "circle_dir", -1)
+        gain = self.gain or 700.0
+        per_s = self.circle_dps / gain if self.circle_dps else 0.055
         if not watch:
-            self.runner.turn(0.33 * self.circle_dir, secs)
+            self.runner.turn(per_s * secs * self.circle_dir, secs)
             return
         self.seg_stop = threading.Event()
 
@@ -540,7 +551,7 @@ class Navigator:
             t_end, gain = time.time() + secs, self.gain or 700.0
             while not self.seg_stop.is_set() and time.time() < t_end:
                 t1 = time.time()
-                self.runner.turn(0.055 * self.circle_dir, 0.9)
+                self.runner.turn(per_s * self.circle_dir, 0.9)
                 shot = gi_enter.raw_shot(self.s)
                 st = hud(shot)["state"] if shot else None
                 if st and st != "normal":
@@ -660,6 +671,7 @@ class Navigator:
         不掉头 180°: 从出生海滩往里走时, 掉头就是回海滩。"""
         gain = self.gain or 580.0
         h = heading if heading is not None else self.target
+        self.last_bad = time.time()
         self.blocked.append((h, time.time() + 40))
         if state == "other":
             self.runner.pause()
@@ -731,10 +743,16 @@ class Navigator:
         if replan:
             out["plan"] = self.replan()
         t_end, last = time.time() + secs, None
-        while time.time() < t_end or (last and (last.get("action") or abs(last.get("err") or 0) > 25) and time.time() < t_end + 8):
+        while True:
+            now = time.time()
+            unsettled = last and (last.get("action") or abs(last.get("err") or 0) > 25) and now < t_end + 8
+            uncalm = now - self.last_bad < self.calm_s and now < t_end + 25
+            if not (now < t_end or unsettled or uncalm):
+                break
             t1 = time.time()
             last = self.check()
             time.sleep(max(0.0, 1.2 - (time.time() - t1)))
+        out["calm_s"] = round(time.time() - self.last_bad, 1) if self.last_bad else None
         # 开段前确认真的在动: 隔 0.4 秒两张图的画面中央差太小 (站住 / 卡住 / 被界面挡住) 就再跑, 最多 10 秒
         for _ in range(4):
             d = self.moving()
@@ -755,7 +773,7 @@ class Navigator:
             if not st or st["state"] == "normal":
                 break
             self.recover(st["state"], st["heading"])
-            t2 = time.time() + 3.0
+            t2 = time.time() + max(3.0, self.calm_s)
             while time.time() < t2:
                 last = self.check()
                 time.sleep(1.0)
