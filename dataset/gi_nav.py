@@ -183,8 +183,9 @@ def minimap(shot):
     for y in range(int(cy - ra), int(cy + ra)):
         for x in range(int(cx - ra), int(cx + ra)):
             r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
-            if b > 200 and g > 140 and r < 150 and b - r > 80:
+            if r < 80 and g > 180 and b > 225:          # 箭头是饱和的纯青 (0,230,255); 白天背后的海和天 r 都 > 80
                 pts.append((x, y))
+    pts = _component(pts, (int(cx), int(cy)))
     out["arrow_px"] = len(pts)
     if len(pts) >= 0.1 * ra * ra:
         mx, my = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
@@ -206,6 +207,62 @@ def minimap(shot):
         out["quest_bearing"] = round(math.degrees(math.atan2(qx, -qy)) % 360, 1)
         out["quest_dist"] = round(math.hypot(qx, qy) / rq, 3)
     return out
+
+
+def _component(pts, seed):
+    """pts 里离 seed 最近那一点所在的 8 连通块 (只要箭头本身, 不要旁边零星的青色)。"""
+    if not pts:
+        return pts
+    ps = set(pts)
+    start = min(pts, key=lambda p: (p[0] - seed[0]) ** 2 + (p[1] - seed[1]) ** 2)
+    seen, todo = {start}, [start]
+    while todo:
+        x, y = todo.pop()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                q = (x + dx, y + dy)
+                if q in ps and q not in seen:
+                    seen.add(q)
+                    todo.append(q)
+    return list(seen)
+
+
+# 按钮图标的 24x24 网格模板 (格子里 ≥30% 的像素接近纯白、低饱和就记 1), 原神 7.2 手机 HUD
+ATT_BOX = (0.79, 0.69, 0.875, 0.845)        # 攻击键: 站在地上是剑; 攀爬时变「落下」, 游泳时没有
+SPR_BOX = (0.885, 0.79, 0.96, 0.935)        # 冲刺键: 游泳时变成波浪图标
+TPL_SWORD = int("0000000000000000000000200000e00001c00007c0000f80001f00003e00007c0000f80001f0001be0001fc00007c0000780000d800010c000700000600000000000000000000000", 16)
+TPL_SWIM = int("00000000000000000000000000000000000000078001f7c0003fe0001f00001f00003c00100fe01fffe00ff80003e300001c00000000000000000000000000000000000000000000", 16)
+
+
+def icon_bits(shot, box, n=24):
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    x0, y0, x1, y1 = box[0] * W, box[1] * H, box[2] * W, box[3] * H
+    st = max(1, int(H / 540))
+    bits = 0
+    for j in range(n):
+        for i in range(n):
+            cnt = tot = 0
+            for yy in range(int(y0 + (y1 - y0) * j / n), int(y0 + (y1 - y0) * (j + 1) / n), st):
+                for xx in range(int(x0 + (x1 - x0) * i / n), int(x0 + (x1 - x0) * (i + 1) / n), st):
+                    r, g, b = gi_enter.pixel(shot, xx / (W - 1), yy / (H - 1))
+                    tot += 1
+                    cnt += min(r, g, b) > 215 and max(r, g, b) - min(r, g, b) < 40
+            bits = (bits << 1) | (1 if tot and cnt / tot >= 0.3 else 0)
+    return bits
+
+
+def _iou(a, b):
+    u = bin(a | b).count("1")
+    return round(bin(a & b).count("1") / u, 2) if u else 0.0
+
+
+def hud(shot):
+    """角色状态: normal (攻击键是剑) / swim (冲刺键是波浪) / other (攀爬、滑翔、菜单等, 剑不见了)。"""
+    sw = _iou(icon_bits(shot, ATT_BOX), TPL_SWORD)
+    sm = _iou(icon_bits(shot, SPR_BOX), TPL_SWIM)
+    state = "normal" if sw >= 0.6 else "swim" if sm >= 0.7 else "other"
+    return {"state": state, "sword": sw, "swim": sm}
 
 
 def ang_diff(a, b):
@@ -341,40 +398,27 @@ def luma(shot):
     return round(sum(v) / len(v), 1)
 
 
-ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时变成「落下」
-BTN_BOX = (0.79, 0.69, 0.875, 0.845)
+ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时是「落下」
 SLOT_TAP = 6
-
-
-def button_mask(shot):
-    """攻击键区域的白色像素集合 (按 2 像素步长采样)。站在地上是剑, 攀爬/游泳时图标会换。"""
-    w, h, _ = shot
-    W, H = max(w, h), min(w, h)
-    m, n = set(), 0
-    for y in range(int(BTN_BOX[1] * H), int(BTN_BOX[3] * H), 2):
-        for x in range(int(BTN_BOX[0] * W), int(BTN_BOX[2] * W), 2):
-            r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
-            n += 1
-            if r * 299 + g * 587 + b * 114 > 200000:
-                m.add((x * 1000 // W, y * 1000 // H))
-    return m, n
 
 
 class Navigator:
     """沿一个方向跑出去: Runner 一直推摇杆、间歇冲刺、镜头小幅左右摆 (角色跟着镜头走 S 形)。
+    开头 calibrate(): 原地跑着左右拖几下镜头, 用小地图箭头量「拖一个画面宽转多少度」(符号和大小每次会话现量)。
     不采集的时候 (gap) 每 ~1.2 秒截一次图:
-      - 小地图箭头 = 角色朝向; 和目标方向差 > 12° 就拖镜头修正 (增益 gain 度/画面宽, 实测约 -580: 向右拖, 角色向左转)
-      - 攻击键图标变了 (和刚进世界时的剑重合度 < 0.5) = 在攀爬或游泳: 点「落下」, 掉头 180°
+      - 小地图箭头 = 角色朝向; 和目标方向差 > 12° 就拖镜头修正
+      - 攻击键不是剑了: 冲刺键是波浪 = 在游泳, 掉头; 否则多半在攀爬, 点「落下」再掉头 (之后 4 秒不再判)
       - 任务标记在小地图里却 2 次截图都没动 = 卡住: 跳一下, 左右交替转 70°
-    每个 gap 开头打开一次大地图, 按红色边界挑方向: 离边界远的方向优先, 不往回走 (和当前目标差 > 120° 的方向扣分)。
-    采集段内 quiet: 不截图 (截图会打断合成), Runner 照跑。"""
+      - 离任务标记 < 0.2 个小地图半径且正朝它跑: 转开 (碰到会触发剧情对话)
+    每个 gap 开头打开一次大地图, 按红色边界挑方向: 当前方向离边界不到 1/4 屏才换, 离边界远的优先、不往回走。
+    采集段内不截图 (截图会打断合成), Runner 照跑。"""
 
-    def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=-580.0, sweep_amp=0.05, sweep_every=2.5,
+    def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=2.5,
                  sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720):
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
         self.target, self.gain, self.min_luma, self.max_wait_s = heading % 360, gain, min_luma, max_wait_s
-        self.ref, self.hist, self.plans, self.flip, self.t0 = None, [], [], 1, time.time()
+        self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
     def __enter__(self):
         self.runner.__enter__()
@@ -391,46 +435,89 @@ class Navigator:
     def tap(self, pt, hold=0.08):
         self.touch.tap(SLOT_TAP, *pt, hold)
 
-    def check(self):
+    def read(self):
         shot = gi_enter.raw_shot(self.s)
         if not shot:
+            return None
+        return {**minimap(shot), **hud(shot)}
+
+    def calibrate(self, du=0.10):
+        """站着标定: 拖镜头 +du / -2du / +du (净转 0), 每次之后把摇杆轻推 0.5 秒让角色转向镜头正前方, 再读箭头。
+        增益 = 朝向变化 / 拖动量, 取多数符号、绝对值中位数。每步只走一两米, 不会冲进任务点。"""
+        r, t = self.runner, self.touch
+        r.pause()
+        time.sleep(0.8)
+        prev, g = self.read(), []
+        for d in (du, -2 * du, du):
+            t.down(SLOT_CAM, *CAM)
+            for k in range(1, 13):
+                t.move(SLOT_CAM, CAM[0] + d * k / 12, CAM[1])
+                time.sleep(0.04)
+            t.up(SLOT_CAM)
+            time.sleep(0.3)
+            t.down(SLOT_STICK, *STICK)
+            t.move(SLOT_STICK, *r.stick_point(0))
+            time.sleep(0.5)
+            t.up(SLOT_STICK)
+            time.sleep(0.8)
+            cur = self.read()
+            if prev and cur and prev["heading"] is not None and cur["heading"] is not None \
+                    and prev["state"] == cur["state"] == "normal":
+                g.append(ang_diff(cur["heading"], prev["heading"]) / d)
+            prev = cur
+        r.resume()
+        pos = [x for x in g if x > 0]
+        neg = [x for x in g if x < 0]
+        big = pos if len(pos) > len(neg) else neg if len(neg) > len(pos) else []
+        if big and 150 <= sorted(abs(x) for x in big)[len(big) // 2] <= 2500:
+            self.gain = (1 if big is pos else -1) * sorted(abs(x) for x in big)[len(big) // 2]
+        self.cal = {"samples": [round(x) for x in g], "gain": self.gain}
+        self.log(f"镜头增益标定: {self.cal}")
+        return self.cal
+
+    def check(self):
+        st = self.read()
+        if not st:
             return self._rec(err="截图失败")
-        mm = minimap(shot)
-        m, n = button_mask(shot)
-        if self.ref is None and 0.07 < len(m) / n < 0.17:
-            self.ref = m
-        iou = len(m & self.ref) / max(1, len(m | self.ref)) if self.ref is not None else None
-        rec = self._rec(heading=mm["heading"], quest=[mm["quest_bearing"], mm["quest_dist"]], btn_iou=None if iou is None else round(iou, 2),
-                        target=round(self.target, 1))
+        rec = self._rec(heading=st["heading"], quest=[st["quest_bearing"], st["quest_dist"]], state=st["state"],
+                        sword=st["sword"], target=round(self.target, 1))
+        now = time.time()
         prev = [h for h in self.hist[-3:-1] if h.get("quest") and h["quest"][1] is not None]
-        if iou is not None and iou < 0.5:
-            rec["action"] = "recover"
-            self.recover(mm["heading"])
-        elif (mm["quest_dist"] is not None and mm["quest_dist"] < 0.95 and len(prev) == 2
-              and all(abs(p["quest"][1] - mm["quest_dist"]) < 0.012 and abs(ang_diff(p["quest"][0], mm["quest_bearing"])) < 2 for p in prev)):
+        gain = self.gain or 580.0
+        if st["state"] != "normal" and now >= self.quiet_until:
+            rec["action"] = "recover_" + st["state"]
+            self.recover(st["state"], st["heading"])
+        elif (st["quest_dist"] is not None and st["quest_dist"] < 0.95 and len(prev) == 2 and st["state"] == "normal"
+              and all(abs(p["quest"][1] - st["quest_dist"]) < 0.012 and abs(ang_diff(p["quest"][0], st["quest_bearing"])) < 2 for p in prev)):
             rec["action"] = "unstick"
             self.tap(JUMP)
             self.target = (self.target + 70 * self.flip) % 360
+            self.runner.turn(70 * self.flip / gain)
             self.flip = -self.flip
-            self.runner.turn((70 * -self.flip) / self.gain)
-        elif mm["heading"] is not None:
-            e = ang_diff(self.target, mm["heading"])
+        elif st["heading"] is not None:
+            if (st["quest_dist"] is not None and st["quest_dist"] < 0.2
+                    and abs(ang_diff(st["quest_bearing"], self.target)) < 70):
+                self.target = (st["quest_bearing"] + 180 + 30 * self.flip) % 360
+                rec["action"] = "avoid_quest"
+            e = ang_diff(self.target, st["heading"])
             rec["err"] = round(e, 1)
             if abs(e) > 12:
-                du = e / self.gain
-                rec["action"] = f"steer {du:+.3f}"
+                du = e / gain
+                rec["action"] = (rec.get("action", "") + f" steer {du:+.3f}").strip()
                 self.runner.turn(du)
         return rec
 
-    def recover(self, heading):
-        self.runner.pause()
-        self.tap(ATTACK)
-        time.sleep(1.5)
-        self.tap(ATTACK)
-        time.sleep(1.0)
-        self.runner.resume()
+    def recover(self, state, heading):
+        """游泳: 掉头往回游。攀爬等: 停下、点「落下」、再掉头。之后 4 秒不再判状态。"""
+        gain = self.gain or 580.0
+        if state == "other":
+            self.runner.pause()
+            self.tap(ATTACK)
+            time.sleep(1.2)
+            self.runner.resume()
         self.target = ((heading if heading is not None else self.target) + 180) % 360
-        self.runner.turn(180 / self.gain)
+        self.runner.turn(180 / gain)
+        self.quiet_until = time.time() + 4.0
 
     def replan(self):
         self.runner.pause()
@@ -469,6 +556,8 @@ class Navigator:
         """不采集的一段: 等天亮 → (开大地图挑方向) → 跑 secs 秒并每 1.2 秒修正一次; 结束时要状态正常、方向差 < 25°, 否则最多再跑 8 秒。"""
         out = {"day": self.wait_daylight() if self.min_luma else None}
         self.runner.resume()
+        if self.cal is None:
+            out["calibration"] = self.calibrate()
         if replan:
             out["plan"] = self.replan()
         t_end, last = time.time() + secs, None

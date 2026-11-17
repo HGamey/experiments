@@ -17,6 +17,10 @@ depth=0ed8a53d:3 (G-buffer 深度 D24S8)。
 收尾 (含出错): 停会话摘层、清 debug.knobs.*、wm size reset、强停游戏、删手机输出目录、按 HOME, 逐项回读。
 --pull meta 用来测长序列 (需求第 7 项): 只拉 session/summary/index 和首、中、尾三帧, 其余在手机上删掉;
   report.json 的 seq 记丢帧次数、最长连续段、开段前后手机剩余空间。
+--motion nav --segments K: 每档一次会话里连采 K 段, 段前用 gi_nav.Navigator 跑 --gap-s 秒 (多指: 摇杆前推 + 间歇冲刺 + 镜头左右摆,
+  按小地图箭头修方向、认出攀爬就落下掉头、卡住就跳、按大地图边界挑方向; 太暗先等天亮), 段内照跑不截图;
+  每段读回到 <档>/s<k>/, 转换时用 fd_motion 量「在跑、在变」, 结论在 report.json 的 tiers[i].segments[k].convert.motion。
+  下一档接着上一档最后的方向跑 (游戏重启后角色还在原地)。
 退出码: 0 每档都采完, 1 有档没采完, 2 收尾没通过。
 """
 import argparse
@@ -48,6 +52,7 @@ import gi_enter  # noqa: E402
 import fd_convert  # noqa: E402
 from cruise import lock_fds  # noqa: E402
 from fd_att_probe import Mover  # noqa: E402
+import gi_nav  # noqa: E402
 from framedump_probe import temps  # noqa: E402
 
 
@@ -110,6 +115,58 @@ def logical_landscape(dev):
     return max(a, b), min(a, b)
 
 
+def trigger(dev, base, lab, frames):
+    """开一段 (改 framedump_go), 等它的 summary.json / refused.json。"""
+    seg = f"{base}/{lab}"
+    t0 = time.time()
+    dev.shell(f"setprop debug.knobs.framedump_go {lab}")
+    done = False
+    for _ in range(frames // 20 + 180):
+        names = dev.su(f"ls {seg}/summary.json {seg}/refused.json 2>/dev/null")
+        if "summary.json" in names or "refused.json" in names:
+            done = "summary.json" in names
+            break
+        time.sleep(1)
+    return {"finished": done, "capture_wall_s": round(time.time() - t0, 2)}
+
+
+def finish(a, dev, seg, sdir, sg, step, tag):
+    """一段: 读回 (all: 整段 tar; meta: 只要元数据和首中尾三帧) → 转换 + 逐帧检查 + 运动量 → 删手机上的段。结果写进 sg。"""
+    t0 = time.time()
+    if a.pull == "all":
+        ok = pull_tar(a.serial, seg, sdir)
+    else:
+        ok = pull_some(a.serial, seg, sdir, ["session.json", "summary.json", "index.csv", "refused.json"])
+        import csv
+        got = [r["frame"].zfill(10) for r in csv.DictReader(open(os.path.join(sdir, "index.csv"))) if r["file"].endswith(".raw")]
+        pick = sorted({got[0], got[len(got) // 2], got[-1]}) if got else []
+        names = dev.su(f"ls {seg}").split()
+        ok = pull_some(a.serial, seg, sdir, [n for n in names if any(n.startswith(f"f{fr}") for fr in pick)]) and ok
+    sg["pull_s"] = round(time.time() - t0, 1)
+    sg["pull_bytes"] = sum(os.path.getsize(os.path.join(sdir, f)) for f in os.listdir(sdir) if f.endswith(".raw"))
+    sg["pull_ok"] = ok
+    dev.su(f"rm -rf {seg}")
+    summ = json.load(open(os.path.join(sdir, "summary.json")))
+    sess = json.load(open(os.path.join(sdir, "session.json")))
+    sg["present"] = {"w": sess["w"], "h": sess["h"], "vk_format": sess["vk_format"]}
+    sg["summary"] = {k: summ.get(k) for k in ("captured", "dropped_slot_busy", "skipped_other", "span_s", "bytes", "write_us_max")}
+    sg["att"] = summ.get("att")
+    sg["seq"] = seq_stats(os.path.join(sdir, "index.csv"))
+    t0 = time.time()
+    sg["convert"] = fd_convert.convert_segment(sdir, a.workers, delete_raw=not a.keep_raw)
+    sg["convert_s"] = round(time.time() - t0, 1)
+    k = max(1, sg["convert"]["frames"]) / 100
+    kc = max(1, summ.get("captured") or 0) / 100
+    sg["per_100_frames_s"] = {"capture": round(summ.get("span_s", 0) / kc, 2),
+                              "pull": round(sg["pull_s"] / k, 1) if a.pull == "all" else None,
+                              "convert": round(sg["convert_s"] / k, 1) if a.pull == "all" else None}
+    sg["disk_bytes"] = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(sdir) for f in fs)
+    mo = sg["convert"].get("motion") or {}
+    step(f"{tag}: 送显 {sess['w']}x{sess['h']}, 采 {summ.get('captured')} 帧, 完整 {sg['convert']['complete']}, "
+         f"读回 {sg['pull_s']} 秒 / {sg['pull_bytes'] / 1e9:.2f} GB, 转换 {sg['convert_s']} 秒; "
+         f"运动 {'达标' if mo.get('ok') else '不达标 ' + str(mo.get('why'))} (run_px {mo.get('run_px_med')}, 中央差 {mo.get('center_lag30_med')})")
+
+
 def main():
     # 平台取消任务先发 SIGINT 再升级: 第一次收到就忽略后续信号并转成 SystemExit, 让每档的 finally 和最后的收尾跑完
     def stop(sig, _frame):
@@ -126,7 +183,12 @@ def main():
     ap.add_argument("--att", required=True)
     ap.add_argument("--tiers", default="1920x1080,1280x720,960x540")
     ap.add_argument("--frames", type=int, default=300)
-    ap.add_argument("--motion", default="run", choices=("run", "turn", "static"))
+    ap.add_argument("--motion", default="run", choices=("run", "turn", "static", "nav"),
+                    help="nav: gi_nav 多指导航 (摇杆 + 冲刺 + 边跑边转镜头, 按小地图修方向), 段间修正")
+    ap.add_argument("--segments", type=int, default=1, help="每档连采几段 (同一会话, 每段 --frames 帧; nav 时段间跑 --gap-s 秒)")
+    ap.add_argument("--gap-s", type=float, default=8, help="nav: 每段之前跑多少秒 (修方向、换地方)")
+    ap.add_argument("--heading", type=float, default=160, help="nav: 起始目标方向, 度 (0 北 90 东)")
+    ap.add_argument("--min-luma", type=float, default=80, help="nav: 画面中央平均灰度低于它就停下等天亮, 最多 12 分钟 (0 不等)")
     ap.add_argument("--walk-s", type=float, default=0, help="第一档开采前推着摇杆走这么多秒 (换地方)")
     ap.add_argument("--angle", type=float, default=0, help="run 和 --walk-s 的摇杆方向, 度: 0 正前, 180 正后, 90 向右")
     ap.add_argument("--slots", type=int, default=16)
@@ -198,62 +260,50 @@ def main():
                 if not t["enter"]["ok"]:
                     raise RuntimeError("没进世界")
                 time.sleep(10)
-                if n == 0 and a.walk_s > 0:
+                if n == 0 and a.walk_s > 0 and a.motion != "nav":
                     with Mover(a.serial, "run", size, a.angle):
                         time.sleep(a.walk_s)
                     time.sleep(2)
                 gi_enter.save_png(a.serial, os.path.join(tdir, "shot.png"))
                 t["temps_before"] = temps(dev, "before")
                 t["data_free_before"] = data_free(dev)
-                with Mover(a.serial, a.motion, size, a.angle):
-                    time.sleep(2.0)
-                    t0 = time.time()
-                    dev.shell(f"setprop debug.knobs.framedump_go {label}")
-                    done = False
-                    for _ in range(a.frames // 20 + 180):
-                        names = dev.su(f"ls {seg}/summary.json {seg}/refused.json 2>/dev/null")
-                        if "summary.json" in names or "refused.json" in names:
-                            done = "summary.json" in names
-                            break
-                        time.sleep(1)
-                    t["capture_wall_s"] = round(time.time() - t0, 2)
+                labels = [label] if a.segments == 1 else [f"{label}_s{k + 1}" for k in range(a.segments)]
+                t["segments"] = []
+                if a.motion == "nav":
+                    touch = gi_nav.Touch(a.serial)
+                    nav = gi_nav.Navigator(a.serial, touch, size[0] / size[1], log=step, heading=a.heading, min_luma=a.min_luma)
+                    try:
+                        with nav:
+                            for lab in labels:
+                                sg = {"label": lab, "gap": nav.gap(a.gap_s)}
+                                sg.update(trigger(dev, base, lab, a.frames))
+                                t["segments"].append(sg)
+                                step(f"{tier} {lab}: 采完={sg['finished']}, 目标方向 {nav.target:.0f}")
+                        a.heading = nav.target          # 下一档接着这个方向跑
+                    finally:
+                        t["nav"] = {"hist": nav.hist, "plans": nav.plans, "runner": nav.runner.log}
+                        touch.close()
+                else:
+                    with Mover(a.serial, a.motion, size, a.angle):
+                        time.sleep(2.0)
+                        for lab in labels:
+                            t["segments"].append({"label": lab, **trigger(dev, base, lab, a.frames)})
                 t["temps_after"] = temps(dev, "after")
                 t["data_free_after"] = data_free(dev)
                 gi_enter.save_png(a.serial, os.path.join(tdir, "shot_after.png"))
-                t["segment_finished"] = done
+                t["segment_finished"] = bool(t["segments"]) and all(sg["finished"] for sg in t["segments"])
                 ab.session_action(PF, sdir, "stop")   # 读回时游戏不用开着, 手机少发热
                 proc.wait(timeout=300)
                 dev.shell(f"am force-stop {a.pkg}")
-                t0 = time.time()
-                if a.pull == "all":
-                    ok = pull_tar(a.serial, seg, tdir)
-                else:
-                    ok = pull_some(a.serial, seg, tdir, ["session.json", "summary.json", "index.csv", "refused.json"])
-                    import csv
-                    got = [r["frame"].zfill(10) for r in csv.DictReader(open(os.path.join(tdir, "index.csv"))) if r["file"].endswith(".raw")]
-                    pick = sorted({got[0], got[len(got) // 2], got[-1]}) if got else []
-                    names = dev.su(f"ls {seg}").split()
-                    ok = pull_some(a.serial, seg, tdir, [n for n in names if any(n.startswith(f"f{fr}") for fr in pick)]) and ok
-                t["pull_s"] = round(time.time() - t0, 1)
-                t["pull_bytes"] = sum(os.path.getsize(os.path.join(tdir, f)) for f in os.listdir(tdir) if f.endswith(".raw"))
-                t["pull_ok"] = ok
-                summ = json.load(open(os.path.join(tdir, "summary.json")))
-                sess = json.load(open(os.path.join(tdir, "session.json")))
-                t["present"] = {"w": sess["w"], "h": sess["h"], "vk_format": sess["vk_format"]}
-                t["summary"] = {k: summ.get(k) for k in ("captured", "dropped_slot_busy", "skipped_other", "span_s", "bytes", "write_us_max")}
-                t["att"] = summ.get("att")
-                t["seq"] = seq_stats(os.path.join(tdir, "index.csv"))
-                t0 = time.time()
-                t["convert"] = fd_convert.convert_segment(tdir, a.workers, delete_raw=not a.keep_raw)
-                t["convert_s"] = round(time.time() - t0, 1)
-                k = max(1, t["convert"]["frames"]) / 100
-                kc = max(1, summ.get("captured") or 0) / 100
-                t["per_100_frames_s"] = {"capture": round(summ.get("span_s", 0) / kc, 2),
-                                         "pull": round(t["pull_s"] / k, 1) if a.pull == "all" else None,
-                                         "convert": round(t["convert_s"] / k, 1) if a.pull == "all" else None}
-                t["disk_bytes"] = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(tdir) for f in fs)
-                step(f"{tier}: 送显 {sess['w']}x{sess['h']}, 采 {summ.get('captured')} 帧, 完整 {t['convert']['complete']}, "
-                     f"读回 {t['pull_s']} 秒 / {t['pull_bytes'] / 1e9:.2f} GB, 转换 {t['convert_s']} 秒")
+                for k, sg in enumerate(t["segments"]):
+                    sd = tdir if len(labels) == 1 else os.path.join(tdir, f"s{k + 1}")
+                    try:
+                        finish(a, dev, f"{base}/{sg['label']}", sd, sg, step, tier if len(labels) == 1 else f"{tier}/s{k + 1}")
+                    except Exception as e:
+                        sg["error"] = f"{type(e).__name__}: {e}"
+                        step(f"{tier}/s{k + 1}: {sg['error']}")
+                if len(labels) == 1:   # 单段: 和以前一样把段的结果放在档这一层
+                    t.update({k2: v for k2, v in t["segments"][0].items() if k2 not in ("label", "finished")})
             except Exception as e:
                 t["error"] = f"{type(e).__name__}: {e}"
                 step(f"{tier}: {t['error']}")
