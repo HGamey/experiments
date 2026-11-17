@@ -272,6 +272,19 @@ def hud(shot):
     return {"state": state, "sword": sw, "swim": sm}
 
 
+def in_world(shot, mm=None):
+    """在大世界里 (不是对话 / 过场 / 复苏页): 血条是绿的, 或者血少时是红的 (255,90,90), 或者小地图箭头认得出来。
+    只认绿血条会把低血量当成不在世界里 (11-17 实测, 整段站着没动)。"""
+    if gi_enter.in_world(shot):
+        return True
+    red = sum(1 for fx, fy in gi_enter.HP_POINTS if (lambda c: c[0] > 220 and c[1] < 130 and c[2] < 130)(gi_enter.pixel(shot, fx, fy)))
+    if red >= 3:
+        return True
+    w, h, _ = shot
+    mm = mm or minimap(shot)
+    return mm["arrow_px"] >= 0.1 * (0.03 * min(w, h)) ** 2
+
+
 def ang_diff(a, b):
     """a - b, 折到 (-180, 180]。"""
     return (a - b + 180) % 360 - 180
@@ -525,7 +538,8 @@ class Navigator:
         shot = gi_enter.raw_shot(self.s)
         if not shot:
             return None
-        return {**minimap(shot), **hud(shot), "world": gi_enter.in_world(shot)}
+        mm = minimap(shot)
+        return {**mm, **hud(shot), "world": in_world(shot, mm)}
 
     def calibrate(self, du=0.10):
         """站着标定: 拖镜头 +du / -2du / +du (净转 0), 每次之后把摇杆轻推 0.5 秒让角色转向镜头正前方, 再读箭头。
