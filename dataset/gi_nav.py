@@ -440,7 +440,7 @@ def return_button(shot):
             r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
             tot += 1
             n += r > 200 and g > 150 and b < 80
-    return tot > 0 and n / tot > 0.12
+    return tot > 0 and n / tot > 0.05      # 有按钮时约 0.10, 没有时接近 0
 
 
 class Navigator:
