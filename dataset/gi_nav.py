@@ -652,8 +652,32 @@ class Navigator:
             t1 = time.time()
             last = self.check()
             time.sleep(max(0.0, 1.2 - (time.time() - t1)))
+        # 开段前确认真的在动: 隔 0.4 秒两张图的画面中央差太小 (站住 / 卡住 / 被界面挡住) 就再跑, 最多 10 秒
+        for _ in range(4):
+            d = self.moving()
+            out.setdefault("moving", []).append(d)
+            if d is None or d >= 6:
+                break
+            self.runner.resume()
+            self.runner.turn(60 * self.flip / (self.gain or 700.0))
+            self.flip = -self.flip
+            t2 = time.time() + 2.5
+            while time.time() < t2:
+                last = self.check()
+                time.sleep(1.0)
         out["last"] = last
         return out
+
+    def moving(self):
+        """隔 0.4 秒两张截图, 画面中央 24x12 个点的平均灰度差 (跑起来 10 以上, 站着 2 以下)。"""
+        a = gi_enter.raw_shot(self.s)
+        time.sleep(0.4)
+        b = gi_enter.raw_shot(self.s)
+        if not a or not b:
+            return None
+        g = lambda sh, fx, fy: sum(c * v for c, v in zip((.299, .587, .114), gi_enter.pixel(sh, fx, fy)))
+        pts = [(0.3 + 0.4 * i / 23, 0.2 + 0.55 * j / 11) for i in range(24) for j in range(12)]
+        return round(sum(abs(g(a, x, y) - g(b, x, y)) for x, y in pts) / len(pts), 1)
 
 
 def story(a):
