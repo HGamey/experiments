@@ -298,6 +298,7 @@ class Runner:
         return STICK[0] + r * math.sin(math.radians(a)) / self.aspect, STICK[1] - r * math.cos(math.radians(a))
 
     def turn(self, du, secs=None):
+        """横拖 du 个画面宽 (单次最多 0.33); secs 给了就用这么长时间拖完 (慢速长拖 = 匀速转镜头)。"""
         while abs(du) > 1e-4:
             d = max(-0.33, min(0.33, du))
             self.queue.append((d, secs or max(0.3, min(1.0, abs(d) * 4))))
@@ -466,9 +467,15 @@ class Navigator:
         self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
-    def segment_start(self):
+    def segment_start(self, secs=None):
+        """采集段开始: 一直按住冲刺; secs 给了就绕大圈跑 —— 整段用一次慢速长拖让镜头匀速转约 0.33 个画面宽
+        (约 230°), 角色跟着镜头跑出半径十来米的弧线, 镜头也一直在转; 左右交替。不给 secs 就是左右对称摆镜头。"""
         self.runner.force_sprint = True
-        self.runner.start_sweeps()
+        if secs:
+            self.circle_dir = -getattr(self, "circle_dir", -1)
+            self.runner.turn(0.33 * self.circle_dir, secs)
+        else:
+            self.runner.start_sweeps()
 
     def segment_end(self):
         self.runner.force_sprint = False

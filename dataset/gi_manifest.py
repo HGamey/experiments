@@ -7,7 +7,8 @@
     pf-node results register manifest.json
 
 result_id 是 <prefix>-<场景>-<采集日期>，dataset.version 是采集日期；研究 ID、方向 ID、设备型号按需改下面的 labels。
-一档多段 (--segments K) 时按段登记: 只收运动达标的段 (fd_motion: 角色在跑、画面在变), 不达标的段写进 claims 但不算进 frames / size。
+一档多段 (--segments K) 时按段登记: 只收运动达标 (fd_motion: 角色在跑、画面在变) 且连续 (0 漏帧、完整帧 ≥240) 的段,
+其余的段写进 claims 但不算进 frames / size。
 每段的帧数、完整帧数、漏掉的 present、每百帧耗时、运动量都作为 metrics 指向 report.json 里的值，登记时中心会逐项核对。
 """
 import argparse
@@ -37,8 +38,12 @@ for i, t in enumerate(r["tiers"]):
         for k, sg in enumerate(segs):
             d = f"{t['tier']}/s{k + 1}"
             mo = (sg.get("convert") or {}).get("motion") or {}
-            if sg.get("convert") and mo.get("ok"):
+            seq = sg.get("seq") or {}
+            cont = sg.get("convert") and seq.get("frames_missed") == 0 and sg["convert"]["complete"] >= 240
+            if sg.get("convert") and mo.get("ok") and cont:
                 units.append((i, k, t["tier"], d, sg))
+            elif sg.get("convert") and mo.get("ok"):
+                dropped.append(f"{d}（不连续：漏 {seq.get('frames_missed')} 帧，完整 {sg['convert']['complete']} 帧）")
             else:
                 dropped.append(f"{d}（{mo.get('why') or sg.get('error') or '没采完'}）")
     elif t.get("convert"):
