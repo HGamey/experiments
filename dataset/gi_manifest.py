@@ -83,11 +83,15 @@ for i, k, tier, d, u in units:
         for name, key, unit in MOTION:
             metrics.append({"name": name, "condition": tag, "value": mo.get(key), "unit": unit, "scope": "image", "method": "measured",
                             "source": {"name": "report", "pointer": f"{base}/convert/motion/{key}"}})
-tiers_done = sorted({u[2] for u in units}, key=lambda x: -int(x.split("x")[0]) if "x" in x else 0)
-per_tier = {tt: sum(u[4]["convert"]["frames"] for u in units if u[2] == tt) for tt in tiers_done}
+def res(tag):   # "1920x1080_2" -> "1920x1080" (同一档重复开的会话算同一分辨率)
+    return tag.split("_")[0]
+
+
+tiers_done = sorted({res(u[2]) for u in units}, key=lambda x: -int(x.split("x")[0]) if "x" in x else 0)
+per_tier = {tt: sum(u[4]["convert"]["frames"] for u in units if res(u[2]) == tt) for tt in tiers_done}
 first = {}
 for u in units:
-    first.setdefault(u[2], u[4]["present"])
+    first.setdefault(res(u[2]), u[4]["present"])
 present = ", ".join(f"{tt}→送显 {first[tt]['w']}x{first[tt]['h']}" for tt in tiers_done)
 atts = units[0][4]["convert"]["atts"] if units else {}
 FMT = {37: "RGBA8", 129: "D24S8", 58: "A2R10G10B10"}

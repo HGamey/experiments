@@ -187,6 +187,7 @@ def main():
                     help="nav: gi_nav 多指导航 (摇杆 + 冲刺 + 边跑边转镜头, 按小地图修方向), 段间修正")
     ap.add_argument("--segments", type=int, default=1, help="每档连采几段 (同一会话, 每段 --frames 帧; nav 时段间跑 --gap-s 秒)")
     ap.add_argument("--gap-s", type=float, default=8, help="nav: 每段之前跑多少秒 (修方向、换地方; 也给手机时间把上一段写完)")
+    ap.add_argument("--fan", action="store_true", help="采集期间打开红魔散热风扇 (/sys/kernel/fan/fan_enable), 收尾恢复原值")
     ap.add_argument("--circle", action="store_true", help="nav: 段内绕大圈跑 (整段匀速转镜头约 230°, 左右交替), 不容易一头撞墙")
     ap.add_argument("--heading", type=float, default=160, help="nav: 起始目标方向, 度 (0 北 90 东)")
     ap.add_argument("--inland", type=float, help="nav: 沿海岸跑时陆地那侧的方位 (游泳往这边转, 爬墙往反方向转)")
@@ -219,11 +220,19 @@ def main():
         step(f"手机上已有层/knobs/wm size 覆盖, 不动: {rec['before']}")
         return 1
     base = f"/data/data/{a.pkg}/files/i3dump"
+    FAN = "/sys/kernel/fan/fan_enable"
+    if a.fan:   # 红魔散热风扇: 采集期间打开, 收尾恢复原值 (降温, 减少 1080p 后几段的写盘丢帧)
+        rec["before"]["fan"] = dev.su(f"cat {FAN} 2>/dev/null").strip()
+        dev.su(f"echo 1 > {FAN}")
+        step(f"风扇: {rec['before']['fan']} -> {dev.su(f'cat {FAN} 2>/dev/null').strip()}")
     try:
+        seen = {}
         for n, tier in enumerate(a.tiers.split(",")):
-            tdir = os.path.join(out, tier)
+            seen[tier] = seen.get(tier, 0) + 1      # 同一档可以重复 (再开一次会话), 目录记成 <档>_2、<档>_3
+            tname = tier if seen[tier] == 1 else f"{tier}_{seen[tier]}"
+            tdir = os.path.join(out, tname)
             os.makedirs(tdir)
-            t = {"tier": tier}
+            t = {"tier": tname}
             rec["tiers"].append(t)
             proc, sdir = None, os.path.join(tdir, "session")
             label = f"{a.scene}_{tier}_{int(time.time())}"
@@ -328,6 +337,8 @@ def main():
     finally:
         dev.shell("wm size reset")
         dev.shell("input keyevent KEYCODE_HOME")
+        if a.fan and rec["before"].get("fan") in ("0", "1"):
+            dev.su(f"echo {rec['before']['fan']} > {FAN}")
         if rec["before"]["wakefulness"] != "Awake":
             dev.shell("input keyevent KEYCODE_SLEEP")
     time.sleep(2)
@@ -335,6 +346,8 @@ def main():
     rec["restore"] = {"focus": gi_enter.focus(a.serial)[-160:], "wm_size": dev.shell("wm size").strip(), "layer_removed": layer_ok,
                       "layer_info": info, "knobs_left": re.findall(r"^\[(debug\.knobs\.[^\]]+)\]: \[.+\]$", dev.shell("getprop"), re.M),
                       "output_dir_left": dev.su(f"ls {base} 2>/dev/null").strip(), "game_running": bool(dev.shell(f"pidof {a.pkg}").strip())}
+    if a.fan:
+        rec["restore"]["fan"] = dev.su(f"cat {FAN} 2>/dev/null").strip()
     rec["restore"]["ok"] = bool(layer_ok and not rec["restore"]["knobs_left"] and not rec["restore"]["output_dir_left"]
                                 and "Override" not in rec["restore"]["wm_size"] and not rec["restore"]["game_running"])
     step("收尾完成")
