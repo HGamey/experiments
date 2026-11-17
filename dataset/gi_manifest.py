@@ -25,6 +25,7 @@ ap.add_argument("desc")
 ap.add_argument("extra", nargs="*", help="本场景另外的局限")
 ap.add_argument("--prefix", default="gi-seq")
 ap.add_argument("--supersedes", nargs="*", default=[], help="被本数据集取代的旧 result_id")
+ap.add_argument("--supersedes-why", help="取代的理由 (默认: 旧数据达不到运动标准)")
 ap.add_argument("--tag", help="result_id 末尾再加一段 (同一场景同一天分几个任务采时区分, 比如 540p)")
 a = ap.parse_args()
 job, rp = a.job, a.report
@@ -109,7 +110,7 @@ if multi:
                   "位移中位数 ≥2 像素且动着的像素 ≥60% 的帧占 70% 以上，且 0.5 秒中央差中位数 ≥3 = 画面在变。收录的段都达标。"
                   + ("不达标没收录的段：" + "、".join(dropped) + "。" if dropped else ""))
 if a.supersedes:
-    claims.append("本数据集取代 " + "、".join(a.supersedes) + "（旧数据角色多半站着转镜头、顶着礁石或夜里慢慢游，达不到运动标准；旧数据不删）。")
+    claims.append("本数据集取代 " + "、".join(a.supersedes) + "（" + (a.supersedes_why or "旧数据角色多半站着转镜头、顶着礁石或夜里慢慢游，达不到运动标准") + "；旧数据不删）。")
 m = {
     "schema": "phonefarm/result@1",
     "result_id": f"{a.prefix}-{r['scene'].replace('_', '-')}-{day}" + (f"-{a.tag}" if a.tag else ""),
