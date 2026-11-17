@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fd_motion.py — 用速度图 (mv 附件) 量一段序列的运动, 判断「角色在跑、画面在变」是否达标。只用标准库。
 
-    python3 -I fd_motion.py <档目录> ... [--every 2]   # 读 fd_convert 转好的 mv/ ui/ PNG, 写 <档目录>/motion.json
+    python3 -I fd_motion.py <档目录> ... [--every 2] [--json-out 目录]   # 读 fd_convert 转好的 mv/ ui/ PNG, 写 motion.json
 fd_convert.py 转换时逐帧调 frame_stats() 和 center_samples(), 结论 (verdict) 进它的返回值, gi_capture.py 写进 report.json。
 
 速度图解码 (原神 7.2, 翻正后): u = 小端 32 位; r=(u>>20)&1023 水平, g=(u>>10)&1023 竖直, b=u&1023 (1023 = 角色等运动物体);
@@ -166,8 +166,9 @@ def read_png(path):
     return w, h, bpp, bytes(rows)
 
 
-def audit_dir(d, every=1, mv="mv"):
-    """对 fd_convert 转好的档目录量 (读 PNG), 写 motion.json, 返回结论。every>1 时隔帧量, 中央差仍按 30 帧配对。"""
+def audit_dir(d, every=1, mv="mv", json_out=None):
+    """对 fd_convert 转好的档目录量 (读 PNG), 写 motion.json (默认写进档目录; 审计别的任务的数据时给 json_out, 不碰原目录),
+    返回结论。every>1 时隔帧量, 中央差仍按 30 帧配对。"""
     rows = list(csv.DictReader(open(os.path.join(d, "checks.csv"))))
     ok = [int(r["frame"]) for r in rows if r.get(mv) == "ok" and r["ui"] == "ok"]
     pick = set(ok[::every]) | {f - 30 for f in ok[::every]}
@@ -191,7 +192,9 @@ def audit_dir(d, every=1, mv="mv"):
     for p in per:
         if p and p["frame"] in lags:
             p["center_lag30"] = lags[p["frame"]]
-    json.dump({"verdict": v, "per_frame": per}, open(os.path.join(d, "motion.json"), "w"), ensure_ascii=False)
+    dst = json_out or os.path.join(d, "motion.json")
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    json.dump({"dir": d, "verdict": v, "per_frame": per}, open(dst, "w"), ensure_ascii=False)
     return v
 
 
@@ -200,6 +203,8 @@ if __name__ == "__main__":
     ap.add_argument("dirs", nargs="+")
     ap.add_argument("--every", type=int, default=1, help="每隔几帧量一帧 (旧数据快速审计用)")
     ap.add_argument("--mv", default="mv", help="速度图附件名")
+    ap.add_argument("--json-out", help="motion_<序号>.json 写到这个目录, 不写进被审计的档目录")
     a = ap.parse_args()
-    for d in a.dirs:
-        print(json.dumps({"dir": d, **audit_dir(d, a.every, a.mv)}, ensure_ascii=False), flush=True)
+    for i, d in enumerate(a.dirs):
+        jo = os.path.join(a.json_out, f"motion_{i}.json") if a.json_out else None
+        print(json.dumps({"dir": d, **audit_dir(d, a.every, a.mv, jo)}, ensure_ascii=False), flush=True)
