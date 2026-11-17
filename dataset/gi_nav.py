@@ -291,6 +291,7 @@ class Runner:
         self.queue, self.log, self.t0 = collections.deque(), [], time.time()
         self.sweeping = sweep_every > 0     # 自动摆镜头开关; 摆法 +a, -2a, +2a, ... 让朝向在均值两侧对称摆
         self.offset, self.swiping, self.last_end = 0.0, False, 0.0
+        self.force_sprint = False          # 采集段内一直按住冲刺 (段短, 体力够)
 
     def stick_point(self, a):
         r = STICK_R
@@ -365,8 +366,8 @@ class Runner:
                         self.sweeps += 1
                         next_sweep = now + self.sweep_every
                     swipe, self.swiping, self.last_end = None, False, time.time()
-            if self.sprint_on > 0:
-                want = ((now - self.t0) % self.sprint_period) < self.sprint_on
+            if self.sprint_on > 0 or self.force_sprint:
+                want = self.force_sprint or ((now - self.t0) % self.sprint_period) < self.sprint_on
                 if want and not btn:
                     t.down(SLOT_BTN, *SPRINT)
                 elif btn and not want:
@@ -466,9 +467,11 @@ class Navigator:
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
     def segment_start(self):
+        self.runner.force_sprint = True
         self.runner.start_sweeps()
 
     def segment_end(self):
+        self.runner.force_sprint = False
         self.runner.stop_sweeps()
 
     def __enter__(self):
