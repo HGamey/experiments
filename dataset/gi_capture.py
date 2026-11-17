@@ -187,6 +187,7 @@ def main():
                     help="nav: gi_nav 多指导航 (摇杆 + 冲刺 + 边跑边转镜头, 按小地图修方向), 段间修正")
     ap.add_argument("--segments", type=int, default=1, help="每档连采几段 (同一会话, 每段 --frames 帧; nav 时段间跑 --gap-s 秒)")
     ap.add_argument("--gap-s", type=float, default=8, help="nav: 每段之前跑多少秒 (修方向、换地方; 也给手机时间把上一段写完)")
+    ap.add_argument("--use-return", action="store_true", help="nav: 每段之前有「返回任务点」就传回任务点 (开场是崖顶草地), 转身背对崖边再跑")
     ap.add_argument("--seg-watch", action="store_true", help="nav: 段内每秒截图看是否在爬墙/游泳, 是就落下并转开 (截图可能让个别帧间隔变长)")
     ap.add_argument("--fan", action="store_true", help="采集期间打开红魔散热风扇 (/sys/kernel/fan/fan_enable), 收尾恢复原值")
     ap.add_argument("--circle", action="store_true", help="nav: 段内绕大圈跑 (整段匀速转镜头约 230°, 左右交替), 不容易一头撞墙")
@@ -284,7 +285,7 @@ def main():
                 if a.motion == "nav":
                     touch = gi_nav.Touch(a.serial)
                     nav = gi_nav.Navigator(a.serial, touch, size[0] / size[1], log=step, heading=a.heading, min_luma=a.min_luma,
-                                           inland=a.inland)
+                                           inland=a.inland, use_return=a.use_return)
                     try:
                         with nav:
                             for lab in labels:

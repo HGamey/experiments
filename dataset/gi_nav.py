@@ -470,7 +470,7 @@ class Navigator:
     采集段内不截图 (截图会打断合成), Runner 照跑。"""
 
     def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=1.5,
-                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720, inland=None):
+                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720, inland=None, use_return=False):
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
         self.runner.sweeping = False        # gap 里只修方向; 采集段内才自动摆镜头 (segment_start / segment_end)
@@ -478,7 +478,48 @@ class Navigator:
         self.pref = heading % 360 if heading >= 0 else None   # 总的偏好方向; None = 第一次看大地图时取最开阔的方向
         self.blocked = []                   # [(方位, 到期时间)]: 刚游泳 / 攀爬过的方向, 一阵子不往那边走
         self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
+        self.use_return = use_return        # 每个 gap 开头有「返回任务点」就传回去 (崖顶草地), 转身背对崖边再跑
+        self.n_return, self.no_avoid_until = 0, 0.0
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
+
+    def turn_standing(self, deg):
+        """站着转身: 拖镜头 deg 度 (按标定的增益), 再轻推摇杆 0.4 秒让角色转向镜头。"""
+        r, t, gain = self.runner, self.touch, self.gain or 700.0
+        r.pause()
+        du = deg / gain
+        while abs(du) > 1e-4:
+            d = max(-0.33, min(0.33, du))
+            t.down(SLOT_CAM, *CAM)
+            for k in range(1, 13):
+                t.move(SLOT_CAM, CAM[0] + d * k / 12, CAM[1])
+                time.sleep(0.04)
+            t.up(SLOT_CAM)
+            time.sleep(0.2)
+            du -= d
+        t.down(SLOT_STICK, *STICK)
+        t.move(SLOT_STICK, *r.stick_point(0))
+        time.sleep(0.4)
+        t.up(SLOT_STICK)
+        time.sleep(0.5)
+
+    def return_reset(self):
+        """有「返回任务点」就点它, 传回任务点 (原神开场: 崖顶草地, 角色朝崖边约 205°), 站着转身 180° 背对崖边。"""
+        shot = gi_enter.raw_shot(self.s)
+        if not shot or not return_button(shot):
+            return None
+        self.runner.pause()
+        self.tap(RETURN_BTN)
+        time.sleep(6)
+        st = self.read()
+        h = st["heading"] if st else None
+        off = (0, 40, -40, 70, -70)[self.n_return % 5]   # 每段换个出发方向, 别每段都是同一条路
+        self.n_return += 1
+        self.turn_standing(180 + off)
+        self.target = ((h if h is not None else 205.0) + 180 + off) % 360
+        self.no_avoid_until = time.time() + 12             # 刚站在任务点上, 别让「躲任务点」把方向又掰回崖边
+        self.pref = self.target
+        self.runner.resume()
+        return {"heading_after_return": h, "offset": off, "target": round(self.target, 1)}
 
     def segment_start(self, secs=None, watch=False):
         """采集段开始: 一直按住冲刺; secs 给了就绕大圈跑 —— 镜头匀速转约 0.33 个画面宽 (约 230°), 角色跟着镜头跑弧线,
@@ -601,7 +642,7 @@ class Navigator:
             self.runner.turn(70 * self.flip / gain)
             self.flip = -self.flip
         elif st["heading"] is not None:
-            if (st["quest_dist"] is not None and st["quest_dist"] < 0.2
+            if (st["quest_dist"] is not None and st["quest_dist"] < 0.2 and now >= self.no_avoid_until
                     and abs(ang_diff(st["quest_bearing"], self.target)) < 70):
                 self.target = (st["quest_bearing"] + 180 + 30 * self.flip) % 360
                 rec["action"] = "avoid_quest"
@@ -684,6 +725,9 @@ class Navigator:
         self.runner.resume()
         if self.cal is None:
             out["calibration"] = self.calibrate()
+        if self.use_return:
+            out["return"] = self.return_reset()
+            replan = replan and not out["return"]   # 刚传回任务点就不用看大地图挑方向了
         if replan:
             out["plan"] = self.replan()
         t_end, last = time.time() + secs, None
