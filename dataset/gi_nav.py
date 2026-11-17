@@ -459,8 +459,8 @@ class Navigator:
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
         self.runner.sweeping = False        # gap 里只修方向; 采集段内才自动摆镜头 (segment_start / segment_end)
-        self.target, self.gain, self.min_luma, self.max_wait_s = heading % 360, gain, min_luma, max_wait_s
-        self.pref = heading % 360           # 总的偏好方向 (从出生海滩往山谷里); 走到边界附近才换
+        self.target, self.gain, self.min_luma, self.max_wait_s = (heading if heading >= 0 else 0) % 360, gain, min_luma, max_wait_s
+        self.pref = heading % 360 if heading >= 0 else None   # 总的偏好方向; None = 第一次看大地图时取最开阔的方向
         self.blocked = []                   # [(方位, 到期时间)]: 刚游泳 / 攀爬过的方向, 一阵子不往那边走
         self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
@@ -490,7 +490,7 @@ class Navigator:
         shot = gi_enter.raw_shot(self.s)
         if not shot:
             return None
-        return {**minimap(shot), **hud(shot)}
+        return {**minimap(shot), **hud(shot), "world": gi_enter.in_world(shot)}
 
     def calibrate(self, du=0.10):
         """站着标定: 拖镜头 +du / -2du / +du (净转 0), 每次之后把摇杆轻推 0.5 秒让角色转向镜头正前方, 再读箭头。
@@ -529,8 +529,16 @@ class Navigator:
         if not st:
             return self._rec(err="截图失败")
         rec = self._rec(heading=st["heading"], quest=[st["quest_bearing"], st["quest_dist"]], state=st["state"],
-                        sword=st["sword"], target=round(self.target, 1))
+                        sword=st["sword"], target=round(self.target, 1), world=st["world"])
         now = time.time()
+        if not st["world"]:
+            # 摔死 / 淹死的「复苏」页, 或者剧情对话: 松手, 交替点复苏键和对话区
+            self.runner.pause()
+            self.offworld = getattr(self, "offworld", 0) + 1
+            self.tap(REVIVE if self.offworld % 2 else DIALOG_TAP)
+            rec["action"] = "offworld"
+            return rec
+        self.runner.resume()
         prev = [h for h in self.hist[-3:-1] if h.get("quest") and h["quest"][1] is not None]
         gain = self.gain or 580.0
         if st["state"] != "normal" and now >= self.quiet_until:
@@ -595,6 +603,8 @@ class Navigator:
         self.blocked = [(b_, u) for b_, u in self.blocked if u > now]
         ok = {a_: (0.6 if d is None else min(d, 0.6)) for a_, d in free.items()
               if all(abs(ang_diff(a_, b_)) > 45 for b_, _ in self.blocked)} or {a_: (0.6 if d is None else min(d, 0.6)) for a_, d in free.items()}
+        if self.pref is None:
+            self.pref = max(ok, key=lambda a_: ok[a_])
         near_pref = min(ok, key=lambda a_: abs(ang_diff(a_, self.pref)))
         old_pref = self.pref
         if ok[near_pref] < 0.12:
