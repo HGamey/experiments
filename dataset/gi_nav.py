@@ -669,7 +669,7 @@ def story(a):
         nav = Navigator(s, touch, w / h, log=step, heading=0, min_luma=0, sprint_on=a.sprint_on)
         with nav:
             nav.runner.pause()
-            t_end, last_png, near_since, odd_since, k = time.time() + a.story, 0.0, None, None, 0
+            t_end, last_png, near_since, odd_since, k, last_jump = time.time() + a.story, 0.0, None, None, 0, 0.0
             while time.time() < t_end:
                 t1 = time.time()
                 shot = gi_enter.raw_shot(s)
@@ -687,6 +687,7 @@ def story(a):
                         nav.runner.pause()
                         nav.tap(RETURN_BTN)
                         e["act"] = "return_to_quest"
+                        near_since = None
                         rec["log"].append(e)
                         time.sleep(4)
                         gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_r.png"))
@@ -704,6 +705,9 @@ def story(a):
                         near_since = None
                         nav.runner.resume()
                         nav.target = mm["quest_bearing"]
+                        if t1 - last_jump > 1.5:     # 跑向任务点时隔一会儿点跳跃: 地上就是跳一下, 空中 (跳崖) 会展开风之翼
+                            nav.tap(JUMP)
+                            last_jump = t1
                         if mm["heading"] is not None:
                             err = ang_diff(nav.target, mm["heading"])
                             if abs(err) > 15 and not nav.runner.busy() and t1 - nav.runner.last_end > 0.9:
@@ -729,6 +733,7 @@ def story(a):
                         last_png, k = time.time(), k + 1
                 else:
                     nav.runner.pause()
+                    near_since = None
                     if t1 - last_png > 3:
                         gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_d.png"))
                         last_png, k = time.time(), k + 1
