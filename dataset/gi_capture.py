@@ -276,7 +276,9 @@ def main():
                         with nav:
                             for lab in labels:
                                 sg = {"label": lab, "gap": nav.gap(a.gap_s)}
+                                nav.segment_start()          # 段内边跑边左右摆镜头
                                 sg.update(trigger(dev, base, lab, a.frames))
+                                nav.segment_end()
                                 t["segments"].append(sg)
                                 step(f"{tier} {lab}: 采完={sg['finished']}, 目标方向 {nav.target:.0f}")
                         a.heading = nav.target          # 下一档接着这个方向跑

@@ -282,6 +282,8 @@ class Runner:
         self.sprint_on, self.sprint_period, self.hz = sprint_on, sprint_period, hz
         self.stop_ev, self.paused, self.idle, self.th, self.sweeps = threading.Event(), threading.Event(), threading.Event(), None, 0
         self.queue, self.log, self.t0 = collections.deque(), [], time.time()
+        self.sweeping = sweep_every > 0     # 自动摆镜头开关; 摆法 +a, -2a, +2a, ... 让朝向在均值两侧对称摆
+        self.offset, self.swiping, self.last_end = 0.0, False, 0.0
 
     def stick_point(self, a):
         r = STICK_R
@@ -293,6 +295,19 @@ class Runner:
             self.queue.append((d, secs or max(0.3, min(1.0, abs(d) * 4))))
             du -= d
 
+    def start_sweeps(self):
+        self.sweeping = True
+
+    def stop_sweeps(self):
+        """停摆, 并把摆出去的偏移拖回来 (朝向回到均值)。"""
+        self.sweeping = False
+        if abs(self.offset) > 1e-4:
+            self.turn(-self.offset)
+            self.offset = 0.0
+
+    def busy(self):
+        return self.swiping or bool(self.queue)
+
     def pause(self):
         self.idle.clear()
         self.paused.set()
@@ -303,15 +318,15 @@ class Runner:
 
     def _loop(self):
         t = self.t
-        held, cur, swipe, sweep_dir, btn = False, None, None, 1, False
-        next_sweep = time.time() + self.sweep_every if self.sweep_every > 0 else float("inf")
+        held, cur, swipe, btn = False, None, None, False
+        next_sweep = time.time() + max(self.sweep_every, 0.5)
         while not self.stop_ev.is_set():
             now = time.time()
             if self.paused.is_set():
                 if held or swipe or btn:
                     for sl in (SLOT_CAM, SLOT_BTN, SLOT_STICK):
                         t.up(sl)
-                    held, swipe, btn, cur = False, None, False, None
+                    held, swipe, btn, cur, self.swiping = False, None, False, None, False
                 self.idle.set()
                 time.sleep(0.05)
                 continue
@@ -326,10 +341,12 @@ class Runner:
                 if self.queue:
                     du, secs = self.queue.popleft()
                     swipe = [now, du, secs, "turn"]
-                elif now >= next_sweep:
-                    swipe = [now, sweep_dir * self.sweep_amp, self.sweep_s, "sweep"]
-                    sweep_dir = -sweep_dir
+                elif self.sweeping and self.sweep_amp > 0 and now >= next_sweep:
+                    tgt = -self.sweep_amp if self.offset > 0 else self.sweep_amp
+                    swipe = [now, tgt - self.offset, self.sweep_s, "sweep"]
+                    self.offset = tgt
                 if swipe:
+                    self.swiping = True
                     t.down(SLOT_CAM, *CAM)
             if swipe:
                 k = min(1.0, (now - swipe[0]) / swipe[2])
@@ -340,7 +357,7 @@ class Runner:
                     if swipe[3] == "sweep":
                         self.sweeps += 1
                         next_sweep = now + self.sweep_every
-                    swipe = None
+                    swipe, self.swiping, self.last_end = None, False, time.time()
             if self.sprint_on > 0:
                 want = ((now - self.t0) % self.sprint_period) < self.sprint_on
                 if want and not btn:
@@ -413,12 +430,21 @@ class Navigator:
     每个 gap 开头打开一次大地图, 按红色边界挑方向: 当前方向离边界不到 1/4 屏才换, 离边界远的优先、不往回走。
     采集段内不截图 (截图会打断合成), Runner 照跑。"""
 
-    def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=2.5,
+    def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=1.5,
                  sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720):
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
+        self.runner.sweeping = False        # gap 里只修方向; 采集段内才自动摆镜头 (segment_start / segment_end)
         self.target, self.gain, self.min_luma, self.max_wait_s = heading % 360, gain, min_luma, max_wait_s
+        self.pref = heading % 360           # 总的偏好方向 (从出生海滩往山谷里); 走到边界附近才换
+        self.blocked = []                   # [(方位, 到期时间)]: 刚游泳 / 攀爬过的方向, 一阵子不往那边走
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
+
+    def segment_start(self):
+        self.runner.start_sweeps()
+
+    def segment_end(self):
+        self.runner.stop_sweeps()
 
     def __enter__(self):
         self.runner.__enter__()
@@ -501,25 +527,33 @@ class Navigator:
                 rec["action"] = "avoid_quest"
             e = ang_diff(self.target, st["heading"])
             rec["err"] = round(e, 1)
-            if abs(e) > 12:
-                du = e / gain
+            # 上一次拖动做完、角色转稳 (0.9 秒) 之后才再修, 每次修 70%, 免得来回过冲
+            if abs(e) > 15 and not self.runner.busy() and now - self.runner.last_end > 0.9:
+                du = 0.7 * e / gain
                 rec["action"] = (rec.get("action", "") + f" steer {du:+.3f}").strip()
                 self.runner.turn(du)
         return rec
 
     def recover(self, state, heading):
-        """游泳: 掉头往回游。攀爬等: 停下、点「落下」、再掉头。之后 4 秒不再判状态。"""
+        """游泳 / 攀爬: (攀爬先停下点「落下」) 往左或右转 100° (交替), 这个方向 40 秒内不再走; 之后 4 秒不再判状态。
+        不掉头 180°: 从出生海滩往里走时, 掉头就是回海滩。"""
         gain = self.gain or 580.0
+        h = heading if heading is not None else self.target
+        self.blocked.append((h, time.time() + 40))
         if state == "other":
             self.runner.pause()
             self.tap(ATTACK)
             time.sleep(1.2)
             self.runner.resume()
-        self.target = ((heading if heading is not None else self.target) + 180) % 360
-        self.runner.turn(180 / gain)
+        turn = 100 * self.flip
+        self.flip = -self.flip
+        self.target = (h + turn) % 360
+        self.runner.turn(turn / gain)
         self.quiet_until = time.time() + 4.0
 
     def replan(self):
+        """开大地图看红色边界: 每个方位打分 = 离边界距离 (封顶 0.6 屏高) - 偏离偏好方向的角度/600, 刚游泳/攀爬过的方向不要。
+        偏好方向离边界不到 0.12 屏高时, 偏好换成最开阔、又不朝来路的方向。"""
         self.runner.pause()
         self.tap(MINIMAP)
         time.sleep(2.5)
@@ -530,15 +564,20 @@ class Navigator:
         if not shot:
             return None
         free = map_free(shot)
-        best, score = None, None
-        for a, d in free.items():
-            v = (d if d is not None else 0.6) - abs(ang_diff(a, self.target)) / 400.0 - (0.5 if abs(ang_diff(a, self.target)) > 120 else 0)
-            if score is None or v > score:
-                best, score = a, v
-        plan = {"t": round(time.time() - self.t0, 1), "free": free, "old": round(self.target, 1), "new": best}
+        now = time.time()
+        self.blocked = [(b_, u) for b_, u in self.blocked if u > now]
+        ok = {a_: (0.6 if d is None else min(d, 0.6)) for a_, d in free.items()
+              if all(abs(ang_diff(a_, b_)) > 45 for b_, _ in self.blocked)} or {a_: (0.6 if d is None else min(d, 0.6)) for a_, d in free.items()}
+        near_pref = min(ok, key=lambda a_: abs(ang_diff(a_, self.pref)))
+        old_pref = self.pref
+        if ok[near_pref] < 0.12:
+            cand = {a_: d for a_, d in ok.items() if abs(ang_diff(a_, self.pref + 180)) > 45} or ok
+            self.pref = max(cand, key=lambda a_: cand[a_])
+        best = max(ok, key=lambda a_: ok[a_] - abs(ang_diff(a_, self.pref)) / 600.0)
+        plan = {"t": round(now - self.t0, 1), "free": free, "old": round(self.target, 1), "new": best, "pref": [old_pref, self.pref],
+                "blocked": [round(b_) for b_, _ in self.blocked]}
         self.plans.append(plan)
-        if best is not None and (free.get(min(free, key=lambda k: abs(ang_diff(k, self.target)))) or 1) < 0.25:
-            self.target = best        # 当前方向离边界不到 1/4 屏才换方向, 否则保持
+        self.target = best
         return plan
 
     def wait_daylight(self):
@@ -715,7 +754,9 @@ def trial(a):
                 g = nav.gap(a.gap_s)
                 step(f"gap {k}: plan={g.get('plan') and g['plan'].get('new')} target={nav.target:.0f} last={g['last']}")
                 gi_enter.save_png(s, os.path.join(out, f"seg{k:02d}.png"))
+                nav.segment_start()
                 time.sleep(a.seg_s)
+                nav.segment_end()
                 k += 1
             rec["hist"], rec["plans"], rec["runner_log"] = nav.hist, nav.plans, nav.runner.log
         time.sleep(1)
