@@ -9,8 +9,10 @@
   depth16/f<帧号>.png   深度 (D24S8 的 24 位深度取高 16 位), 16 位灰度 PNG, 0 = 近/远看游戏约定 (见报告)
   depth24/f<帧号>.png   同一深度的 24 位无损: R=高 8 位, G=中 8 位, B=低 8 位, d = (R<<16|G<<8|B) / 16777215
   <附件>/f<帧号>.png    其他 32 位附件 (如 A2R10G10B10) 原样 4 字节存 RGBA8 PNG (无损, 小端: R 通道=第 0 字节)
-  checks.csv            逐帧: 帧号、gap、附件齐不齐、中央区帧间差中位数、不带 UI 与带 UI 中央区差中位数、深度范围
-python3 -I fd_convert.py <段目录> [--workers 4] [--delete-raw]
+  checks.csv            逐帧: 帧号、gap、附件齐不齐、中央区帧间差中位数、不带 UI 与带 UI 中央区差中位数、深度范围,
+                        以及速度图的运动量 speed_med / moving_frac / run_px / center_lag30 (定义和阈值见 fd_motion.py)
+  返回值的 motion        整段「角色在跑、画面在变」的结论 (fd_motion.verdict), 不达标的段不登记
+python3 -I fd_convert.py <段目录> [--workers 4] [--delete-raw] [--mv mv]
 """
 import argparse
 import csv
@@ -20,6 +22,9 @@ import struct
 import sys
 import zlib
 from concurrent.futures import ProcessPoolExecutor
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fd_motion  # noqa: E402
 
 COLOR8 = {37: "rgba", 43: "rgba", 44: "bgra", 50: "bgra"}
 DEPTH24 = {129, 125}
@@ -71,7 +76,7 @@ def depth24_from_d24(raw):
 
 def convert_one(job):
     """(段目录, 帧号字符串, 附件表) -> 写好的文件和几个统计量; 在子进程里跑。"""
-    d, fr, ui_wh, atts, flip = job
+    d, fr, ui_wh, atts, flip, mv = job
     res = {"frame": fr}
     raw = open(os.path.join(d, f"f{fr}.raw"), "rb").read()
     w, h = ui_wh
@@ -105,6 +110,9 @@ def convert_one(job):
         elif a["bytes_per_pixel"] == 4:
             os.makedirs(os.path.join(d, name), exist_ok=True)
             open(os.path.join(d, name, f"f{fr}.png"), "wb").write(png_bytes(aw, ah, 6, 8, b, 4))
+            if name == mv:
+                res["motion"] = fd_motion.frame_stats(b, aw, ah)
+                res["mv_mask"] = fd_motion.center_samples(b, aw, ah, 4, "mv")
         res[name] = "ok"
     return res
 
@@ -128,19 +136,20 @@ def med_absdiff(a, b):
     return v[len(v) // 2]
 
 
-def convert_segment(d, workers=4, delete_raw=False, flip=True):
+def convert_segment(d, workers=4, delete_raw=False, flip=True, mv="mv"):
     s = json.load(open(os.path.join(d, "session.json")))
     summ = json.load(open(os.path.join(d, "summary.json")))
     atts = {r["name"]: r for r in ((summ.get("att") or {}).get("rules") or []) if r.get("w")}
     rows = list(csv.DictReader(open(os.path.join(d, "index.csv"))))
     frames = [r["frame"].zfill(10) for r in rows
               if r["file"].endswith(".raw") and os.path.exists(os.path.join(d, "f%s.raw" % r["frame"].zfill(10)))]
-    jobs = [(d, fr, (s["w"], s["h"]), atts, flip) for fr in frames]
+    jobs = [(d, fr, (s["w"], s["h"]), atts, flip, mv) for fr in frames]
     with ProcessPoolExecutor(max_workers=workers) as ex:
         res = list(ex.map(convert_one, jobs, chunksize=4))
     by = {r["frame"]: r for r in res}
     noui = next((n for n, a in atts.items() if a["vk_format"] in COLOR8), None)
     depth = next((n for n, a in atts.items() if a["vk_format"] in DEPTH24), None)
+    lags = fd_motion.center_lag({int(fr): (x["ui_center"], x.get("mv_mask")) for fr, x in by.items()})
     out_rows, prev = [], None
     for r in rows:
         fr = r["frame"].zfill(10)
@@ -151,6 +160,10 @@ def convert_segment(d, workers=4, delete_raw=False, flip=True):
         row["motion_med"] = med_absdiff(prev, x["ui_center"]) if x and prev else ""
         row["noui_vs_ui_med"] = med_absdiff(x.get(noui + "_center"), x["ui_center"]) if x and noui and x.get(noui + "_center") else ""
         row["depth_hi_range"] = "%d-%d" % x[depth + "_range"] if x and depth and x.get(depth + "_range") else ""
+        m = (x or {}).get("motion") or {}
+        for k in ("speed_med", "moving_frac", "run_px"):
+            row[k] = m.get(k, "")
+        row["center_lag30"] = lags.get(int(r["frame"]), "")
         prev = x["ui_center"] if x else None
         out_rows.append(row)
     with open(os.path.join(d, "checks.csv"), "w", newline="") as f:
@@ -165,7 +178,11 @@ def convert_segment(d, workers=4, delete_raw=False, flip=True):
                     os.remove(q)
     complete = sum(1 for r in out_rows if r["ui"] == "ok" and all(r[n] == "ok" for n in atts))
     meds = sorted(r["noui_vs_ui_med"] for r in out_rows if isinstance(r["noui_vs_ui_med"], int))
-    return {"frames": len(frames), "complete": complete, "flip": flip,
+    t = [int(r["t_ns"]) for r in rows if r.get("t_ns")]
+    dt = sorted((b - a) / 1e6 for a, b in zip(t, t[1:]) if b > a)
+    motion = fd_motion.verdict([x.get("motion") for x in res], list(lags.values()), dt[len(dt) // 2] if dt else 1000 / 60) \
+        if any(x.get("motion") for x in res) else None
+    return {"frames": len(frames), "complete": complete, "flip": flip, "motion": motion,
             "noui_vs_ui_med_p50": meds[len(meds) // 2] if meds else None, "atts": {n: {k: a[k] for k in ("vk_format", "w", "h", "bytes_per_pixel")} for n, a in atts.items()}}
 
 
@@ -175,5 +192,6 @@ if __name__ == "__main__":
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--delete-raw", action="store_true")
     ap.add_argument("--no-flip", action="store_true")
+    ap.add_argument("--mv", default="mv", help="速度图附件名 (量运动用)")
     a = ap.parse_args()
-    print(json.dumps(convert_segment(a.dir, a.workers, a.delete_raw, not a.no_flip), ensure_ascii=False))
+    print(json.dumps(convert_segment(a.dir, a.workers, a.delete_raw, not a.no_flip, a.mv), ensure_ascii=False))

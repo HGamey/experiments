@@ -1,6 +1,6 @@
 """gi_enter.py — 原神冷启动进世界, 不靠 OCR (中心节点是 Linux, phonefarm onboard 的 OCR 只能在 macOS 上编)。
 
-判据只有一个: 角色血条左段是绿色 (原神 7.2, 横屏比例坐标 x=0.43..0.46, y=0.918, 实测 RGB 150,215,34)。
+判据只有一个: 角色血条左段有颜色 (原神 7.2, 横屏比例坐标 x=0.405..0.46, y=0.918; 血多时绿 150,215,34, 血少时红 255,90,90)。
 没进世界就每 --tap-every 秒点一下屏幕中央: 门口「点击进入」点哪里都进; 资源下载页、白色加载页、世界里点中央都无害。
 只在前台窗口是游戏时才点 (红魔的游戏空间、系统弹窗会抢前台, 盲点会点进别的应用); 游戏不在前台就拉回来, 进程没了就重新启动 (最多 --relaunch 次)。
 截图用 screencap 的原始 RGBA (不解码 PNG), 一张 13 MB, 取几个像素。
@@ -11,6 +11,7 @@ import subprocess
 import time
 
 HP_POINTS = [(0.43, 0.918), (0.44, 0.918), (0.45, 0.918), (0.46, 0.918)]
+MINIMAP_C = (0.109, 0.144)    # 小地图圆心 (横屏比例坐标), 和 gi_nav.MINIMAP 一致
 
 
 def _lock_fds():
@@ -41,14 +42,34 @@ def pixel(shot, fx, fy):
     return px[o], px[o + 1], px[o + 2]
 
 
+HP_POINTS_WIDE = [(x, 0.918) for x in (0.405, 0.41, 0.415, 0.42, 0.43, 0.44, 0.45, 0.46)]
+
+
+def arrow_px(shot):
+    """小地图圆心附近饱和纯青 (角色箭头) 的像素数, 按全分辨率折算。"""
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    cx, cy, ra = MINIMAP_C[0] * W, MINIMAP_C[1] * H, 0.03 * H
+    step, n = max(1, int(H / 540)), 0
+    for y in range(int(cy - ra), int(cy + ra), step):
+        for x in range(int(cx - ra), int(cx + ra), step):
+            r, g, b = pixel(shot, x / (W - 1), y / (H - 1))
+            n += r < 80 and g > 180 and b > 225
+    return n * step * step
+
+
 def in_world(shot):
+    """血条在就是在大世界里: 血多时是绿的 (150,215,34), 血少时是红的 (255,90,90), 从左端 0.40 开始填。
+    血只剩百分之几时红条短到采样点都落空, 这时看小地图上的角色箭头。"""
     if not shot:
         return False
     good = 0
-    for fx, fy in HP_POINTS:
+    for fx, fy in HP_POINTS_WIDE:
         r, g, b = pixel(shot, fx, fy)
-        good += g > 180 and 100 < r < 200 and b < 100
-    return good >= 3
+        good += (g > 180 and 100 < r < 200 and b < 100) or (r > 220 and g < 130 and b < 130)
+    if good >= 3:
+        return True
+    return arrow_px(shot) >= 0.1 * (0.03 * min(shot[0], shot[1])) ** 2
 
 
 def save_png(serial, path):
