@@ -8,7 +8,8 @@ shell 用户虽在 input 组, SELinux 不让它写输入设备, 所以经一个�
 坐标一律用「横屏比例坐标」(u, v) ∈ [0,1]², 按 dumpsys input 的显示视口 (方向、wm size 下的物理框) 换成面板坐标。
 
     python3 -I dataset/gi_nav.py <serial> --selftest [--pkg com.miHoYo.Yuanshen] [--tier 1920x1080]
-    python3 -I dataset/gi_nav.py <serial> --trial 150 [--heading 160] [--gap-s 8] [--seg-s 6] [--min-luma 0]
+    python3 -I dataset/gi_nav.py <serial> --trial 150 [--heading 160] [--gap-s 8] [--seg-s 6] [--min-luma 0] [--inland 180]
+    python3 -I dataset/gi_nav.py <serial> --story 600     # 推进开场剧情 (朝任务标记跑、点对话、打怪), 截图留证
 自检: wm size → 进世界 → 打开「指针位置」叠加 → 两指同时 (摇杆前推 + 横拖镜头) → 截图 → 关叠加
       → 截小地图 / 点开大地图截图 → 收尾 (还原指针位置、wm size、强停游戏、HOME)。截图和 nav.json 写到 $PF_JOB_OUT/nav_selftest_<时间>/。
 """
@@ -40,6 +41,7 @@ SPRINT = (0.922, 0.861)     # 冲刺键 (按住持续冲刺, 耗体力)
 JUMP = (0.922, 0.653)       # 跳跃键
 MINIMAP = (0.109, 0.144)    # 小地图圆心; 点它打开大地图
 SLOT_STICK, SLOT_CAM, SLOT_BTN = 7, 8, 9   # 用高位槽, 不和真实触摸 (0 起) 撞
+SLOT_TAP = 6
 
 
 def _lock_fds():
@@ -89,6 +91,11 @@ class Touch:
         self.p = subprocess.Popen(["adb", "-s", serial, "shell", "su -c sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, pass_fds=_lock_fds())
         self.active, self.tid, self.lock, self.nsync = set(), 30000, threading.Lock(), 0
+        # 上一个注入进程被杀时可能留下没抬起的手指: 先把自己用的槽位都抬起来
+        ev = []
+        for sl in (SLOT_TAP, SLOT_STICK, SLOT_CAM, SLOT_BTN):
+            ev += [(EV_ABS, ABS_MT_SLOT, sl), (EV_ABS, ABS_MT_TRACKING_ID, -1)]
+        self._emit(ev + [(EV_KEY, BTN_TOUCH, 0), (EV_KEY, BTN_TOOL_FINGER, 0)])
 
     def refresh(self):
         self.vp = viewport(self.serial)
@@ -416,7 +423,8 @@ def luma(shot):
 
 
 ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时是「落下」
-SLOT_TAP = 6
+INTERACT = (0.63, 0.50)     # 交互提示 (对话 / 调查) 出现在角色右侧
+DIALOG_TAP = (0.75, 0.63)   # 对话里点这里: 普通对话点哪都翻页, 有选项时正好落在选项列表上
 
 
 class Navigator:
@@ -614,6 +622,114 @@ class Navigator:
         return out
 
 
+def story(a):
+    """推进开场剧情: 在世界里就朝小地图任务标记跑 (到了先点交互, 再连点攻击打怪), 不在世界里 (对话 / 过场) 就松手点对话区。
+    每 3–6 秒存一张截图到 $PF_JOB_OUT/nav_story_<时间>/, story.json 记每一步。跑 --story 秒为止。"""
+    out = os.path.join(os.environ.get("PF_JOB_OUT") or ".", f"nav_story_{time.strftime('%Y%m%d-%H%M%S')}")
+    os.makedirs(out)
+    rec = {"steps": [], "log": [], "args": vars(a)}
+
+    def step(msg):
+        rec["steps"].append({"t": round(time.time(), 1), "msg": msg})
+        print(msg, flush=True)
+        json.dump(rec, open(os.path.join(out, "story.json"), "w"), ensure_ascii=False, indent=1)
+
+    s = a.serial
+    rec["before"] = {"wm_size": sh(s, "wm size").strip()}
+    if "Override" in rec["before"]["wm_size"]:
+        step(f"手机上已有 wm size 覆盖, 不动: {rec['before']}")
+        return 2
+    touch = None
+    try:
+        sh(s, "input keyevent KEYCODE_WAKEUP")
+        w, h = 16, 9
+        if a.tier != "native":
+            w, h = (int(x) for x in a.tier.split("x"))
+            sh(s, f"wm size {h}x{w}")
+        ok, secs, taps = gi_enter.enter_world(s, a.pkg, cold=True, timeout=600, log=step, fail_png=os.path.join(out, "enter_fail.png"))
+        rec["enter"] = {"ok": ok, "seconds": secs}
+        if not ok:
+            raise RuntimeError("没进世界")
+        time.sleep(3)
+        touch = Touch(s)
+        nav = Navigator(s, touch, w / h, log=step, heading=0, min_luma=0, sprint_on=a.sprint_on)
+        with nav:
+            nav.runner.pause()
+            t_end, last_png, near_since, odd_since, k = time.time() + a.story, 0.0, None, None, 0
+            while time.time() < t_end:
+                t1 = time.time()
+                shot = gi_enter.raw_shot(s)
+                world = bool(shot) and gi_enter.in_world(shot)
+                e = {"t": round(t1 - nav.t0, 1), "world": world}
+                if world:
+                    if nav.cal is None:
+                        nav.runner.resume()
+                        nav.calibrate()
+                    nav.runner.resume()
+                    mm, hd = minimap(shot), hud(shot)
+                    e.update(heading=mm["heading"], quest=[mm["quest_bearing"], mm["quest_dist"]], state=hd["state"])
+                    gain = nav.gain or 800.0
+                    if hd["state"] != "normal":
+                        odd_since = odd_since or t1
+                        if t1 - odd_since > (15 if hd["state"] == "swim" else 8) and t1 >= nav.quiet_until:
+                            nav.recover(hd["state"], mm["heading"])
+                            e["act"] = "recover_" + hd["state"]
+                            odd_since = None
+                    else:
+                        odd_since = None
+                    if "act" not in e and mm["quest_bearing"] is not None and (mm["quest_dist"] or 0) > 0.06:
+                        near_since = None
+                        nav.target = mm["quest_bearing"]
+                        if mm["heading"] is not None:
+                            err = ang_diff(nav.target, mm["heading"])
+                            if abs(err) > 15 and not nav.runner.busy() and t1 - nav.runner.last_end > 0.9:
+                                nav.runner.turn(0.7 * err / gain)
+                                e["act"] = f"steer {err:+.0f}"
+                    elif "act" not in e:
+                        near_since = near_since or t1
+                        dt = t1 - near_since
+                        if dt > 3:
+                            nav.tap(INTERACT)
+                            e["act"] = "interact"
+                        if dt > 8:
+                            for _ in range(6):
+                                nav.tap(ATTACK)
+                                time.sleep(0.35)
+                            nav.runner.turn(0.15)
+                            e["act"] = "attack"
+                        if dt > 25:
+                            near_since = None
+                    if t1 - last_png > 6:
+                        gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_w.png"))
+                        last_png, k = time.time(), k + 1
+                else:
+                    nav.runner.pause()
+                    if t1 - last_png > 3:
+                        gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_d.png"))
+                        last_png, k = time.time(), k + 1
+                    nav.tap(DIALOG_TAP)
+                    e["act"] = "dialog_tap"
+                rec["log"].append(e)
+                if len(rec["log"]) % 10 == 0:
+                    json.dump(rec, open(os.path.join(out, "story.json"), "w"), ensure_ascii=False, indent=1)
+                time.sleep(max(0.0, 1.2 - (time.time() - t1)))
+            rec["cal"] = nav.cal
+        gi_enter.save_png(s, os.path.join(out, "end.png"))
+        step("story 结束")
+        return 0
+    except Exception as e:
+        step(f"出错: {type(e).__name__}: {e}")
+        return 1
+    finally:
+        if touch:
+            touch.close()
+        sh(s, f"am force-stop {a.pkg}")
+        sh(s, "wm size reset")
+        sh(s, "input keyevent KEYCODE_HOME")
+        rec["restore"] = {"wm_size": sh(s, "wm size").strip(), "game_running": bool(sh(s, f"pidof {a.pkg}").strip())}
+        step(f"收尾: {rec['restore']}")
+
+
 def selftest(a):
     out = os.path.join(os.environ.get("PF_JOB_OUT") or ".", f"nav_selftest_{time.strftime('%Y%m%d-%H%M%S')}")
     os.makedirs(out)
@@ -794,9 +910,13 @@ if __name__ == "__main__":
     ap.add_argument("--seg-s", type=float, default=6)
     ap.add_argument("--min-luma", type=float, default=0, help="画面中央平均灰度低于它就停下等天亮 (0 不等)")
     ap.add_argument("--inland", type=float, help="沿海岸跑: 陆地那侧的方位 (游泳往这边转, 爬墙往反方向转)")
+    ap.add_argument("--story", type=float, default=0, help="推进开场剧情这么多秒 (朝任务标记跑、点对话、打怪)")
+    ap.add_argument("--sprint-on", type=float, default=0.0, help="story 时冲刺键每 5 秒按住几秒 (0 不冲刺, 省体力)")
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest(a))
     if a.trial > 0:
         sys.exit(trial(a))
+    if a.story > 0:
+        sys.exit(story(a))
     ap.error("给 --selftest 或 --trial; 采集里用 Touch / Runner / Navigator")
