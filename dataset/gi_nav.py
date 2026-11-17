@@ -431,13 +431,14 @@ class Navigator:
     采集段内不截图 (截图会打断合成), Runner 照跑。"""
 
     def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=None, sweep_amp=0.05, sweep_every=1.5,
-                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720):
+                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720, inland=None):
         self.s, self.touch, self.log = serial, touch, log
         self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
         self.runner.sweeping = False        # gap 里只修方向; 采集段内才自动摆镜头 (segment_start / segment_end)
         self.target, self.gain, self.min_luma, self.max_wait_s = heading % 360, gain, min_luma, max_wait_s
         self.pref = heading % 360           # 总的偏好方向 (从出生海滩往山谷里); 走到边界附近才换
         self.blocked = []                   # [(方位, 到期时间)]: 刚游泳 / 攀爬过的方向, 一阵子不往那边走
+        self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
     def segment_start(self):
@@ -545,8 +546,12 @@ class Navigator:
             self.tap(ATTACK)
             time.sleep(1.2)
             self.runner.resume()
-        turn = 100 * self.flip
-        self.flip = -self.flip
+        if self.inland is not None:
+            side = 1 if ang_diff(self.inland, h) > 0 else -1
+            turn = side * 100 if state == "swim" else -side * 70
+        else:
+            turn = 100 * self.flip
+            self.flip = -self.flip
         self.target = (h + turn) % 360
         self.runner.turn(turn / gain)
         self.quiet_until = time.time() + 4.0
@@ -571,7 +576,8 @@ class Navigator:
         near_pref = min(ok, key=lambda a_: abs(ang_diff(a_, self.pref)))
         old_pref = self.pref
         if ok[near_pref] < 0.12:
-            cand = {a_: d for a_, d in ok.items() if abs(ang_diff(a_, self.pref + 180)) > 45} or ok
+            # 偏好方向走到头了: 换最开阔、又不朝来路的方向; 都不行 (比如沙滩带的尽头) 才掉头
+            cand = {a_: d for a_, d in ok.items() if abs(ang_diff(a_, self.pref + 180)) > 45 and d >= 0.15} or ok
             self.pref = max(cand, key=lambda a_: cand[a_])
         best = max(ok, key=lambda a_: ok[a_] - abs(ang_diff(a_, self.pref)) / 600.0)
         plan = {"t": round(now - self.t0, 1), "free": free, "old": round(self.target, 1), "new": best, "pref": [old_pref, self.pref],
@@ -748,7 +754,7 @@ def trial(a):
         time.sleep(5)
         touch = Touch(s)
         gi_enter.save_png(s, os.path.join(out, "start.png"))
-        with Navigator(s, touch, w / h, log=step, heading=a.heading, min_luma=a.min_luma) as nav:
+        with Navigator(s, touch, w / h, log=step, heading=a.heading, min_luma=a.min_luma, inland=a.inland) as nav:
             t_end, k = time.time() + a.trial, 0
             while time.time() < t_end:
                 g = nav.gap(a.gap_s)
@@ -787,6 +793,7 @@ if __name__ == "__main__":
     ap.add_argument("--gap-s", type=float, default=8)
     ap.add_argument("--seg-s", type=float, default=6)
     ap.add_argument("--min-luma", type=float, default=0, help="画面中央平均灰度低于它就停下等天亮 (0 不等)")
+    ap.add_argument("--inland", type=float, help="沿海岸跑: 陆地那侧的方位 (游泳往这边转, 爬墙往反方向转)")
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest(a))

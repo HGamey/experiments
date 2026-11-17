@@ -188,6 +188,7 @@ def main():
     ap.add_argument("--segments", type=int, default=1, help="每档连采几段 (同一会话, 每段 --frames 帧; nav 时段间跑 --gap-s 秒)")
     ap.add_argument("--gap-s", type=float, default=8, help="nav: 每段之前跑多少秒 (修方向、换地方)")
     ap.add_argument("--heading", type=float, default=160, help="nav: 起始目标方向, 度 (0 北 90 东)")
+    ap.add_argument("--inland", type=float, help="nav: 沿海岸跑时陆地那侧的方位 (游泳往这边转, 爬墙往反方向转)")
     ap.add_argument("--min-luma", type=float, default=80, help="nav: 画面中央平均灰度低于它就停下等天亮, 最多 12 分钟 (0 不等)")
     ap.add_argument("--walk-s", type=float, default=0, help="第一档开采前推着摇杆走这么多秒 (换地方)")
     ap.add_argument("--angle", type=float, default=0, help="run 和 --walk-s 的摇杆方向, 度: 0 正前, 180 正后, 90 向右")
@@ -271,7 +272,8 @@ def main():
                 t["segments"] = []
                 if a.motion == "nav":
                     touch = gi_nav.Touch(a.serial)
-                    nav = gi_nav.Navigator(a.serial, touch, size[0] / size[1], log=step, heading=a.heading, min_luma=a.min_luma)
+                    nav = gi_nav.Navigator(a.serial, touch, size[0] / size[1], log=step, heading=a.heading, min_luma=a.min_luma,
+                                           inland=a.inland)
                     try:
                         with nav:
                             for lab in labels:
@@ -281,7 +283,7 @@ def main():
                                 nav.segment_end()
                                 t["segments"].append(sg)
                                 step(f"{tier} {lab}: 采完={sg['finished']}, 目标方向 {nav.target:.0f}")
-                        a.heading = nav.target          # 下一档接着这个方向跑
+                        a.heading = nav.pref            # 下一档接着这个方向跑
                     finally:
                         t["nav"] = {"hist": nav.hist, "plans": nav.plans, "runner": nav.runner.log}
                         touch.close()
