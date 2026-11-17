@@ -25,6 +25,7 @@ ap.add_argument("desc")
 ap.add_argument("extra", nargs="*", help="本场景另外的局限")
 ap.add_argument("--prefix", default="gi-seq")
 ap.add_argument("--supersedes", nargs="*", default=[], help="被本数据集取代的旧 result_id")
+ap.add_argument("--tag", help="result_id 末尾再加一段 (同一场景同一天分几个任务采时区分, 比如 540p)")
 a = ap.parse_args()
 job, rp = a.job, a.report
 r = json.load(open(rp))
@@ -111,7 +112,7 @@ if a.supersedes:
     claims.append("本数据集取代 " + "、".join(a.supersedes) + "（旧数据角色多半站着转镜头、顶着礁石或夜里慢慢游，达不到运动标准；旧数据不删）。")
 m = {
     "schema": "phonefarm/result@1",
-    "result_id": f"{a.prefix}-{r['scene'].replace('_', '-')}-{day}",
+    "result_id": f"{a.prefix}-{r['scene'].replace('_', '-')}-{day}" + (f"-{a.tag}" if a.tag else ""),
     "title": f"原神连续序列帧：{a.name}（{len(tiers_done)} 档分辨率，每帧带/不带 UI、深度、速度图）",
     "job_id": job,
     "labels": {"device": "REDMAGIC NX809J", "game_id": "genshin", "game_version": r.get("game_version"), "research_id": "gi-capture-req-20261113",
@@ -124,9 +125,9 @@ m = {
     "claims": claims,
     "limitations": ["每段第 1 帧没有附件（拷贝挂在开段后的下一次 present 上）。",
                     "1 级新号，只到得了开场的坠星山谷一带；城里、室内、秘境要有进度的号。2K 拿不到：游戏按约 207 万像素（1920×1080）封顶送显尺寸。",
-                    "每档单独冷启动，三档的画面不是同一时刻、同一地点。"] + a.extra,
+                    ] + (["每档单独冷启动，各档的画面不是同一时刻、同一地点。"] if len(tiers_done) > 1 else []) + a.extra,
     "dataset": {"name": f"原神序列帧 {a.name}", "version": day, "pairing": "real",
-                "purpose": "红魔上录的原神连续画面，每帧有带 UI、不带 UI、深度和速度图，三档分辨率，用来训练和评估超分、插帧",
+                "purpose": f"红魔上录的原神连续画面，每帧有带 UI、不带 UI、深度和速度图，{len(tiers_done)} 档分辨率，用来训练和评估超分、插帧",
                 "capture_method": "灰层 framedump 送显读回 + framedump_att 拷 tonemap 输出、G-buffer 深度、速度 pass；wm size 定分辨率，冷启动"
                                   + ("；多指注入导航（摇杆 + 冲刺 + 边跑边转镜头，按小地图修方向）" if multi else ""),
                 "frames": frames, "scenes": 1, "splits": None, "size_bytes": size, "location": f"job:{job}:{root}/"},
