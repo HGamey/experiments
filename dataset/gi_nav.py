@@ -692,7 +692,7 @@ def story(a):
                         gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_r.png"))
                         last_png, k = time.time(), k + 1
                         continue
-                    if hd["state"] != "normal":
+                    if hd["state"] != "normal" and hd["state"] != "other_still":
                         odd_since = odd_since or t1
                         if t1 - odd_since > (15 if hd["state"] == "swim" else 8) and t1 >= nav.quiet_until:
                             nav.recover(hd["state"], mm["heading"])
@@ -702,6 +702,7 @@ def story(a):
                         odd_since = None
                     if "act" not in e and mm["quest_bearing"] is not None and (mm["quest_dist"] or 0) > 0.06:
                         near_since = None
+                        nav.runner.resume()
                         nav.target = mm["quest_bearing"]
                         if mm["heading"] is not None:
                             err = ang_diff(nav.target, mm["heading"])
@@ -709,18 +710,19 @@ def story(a):
                                 nav.runner.turn(0.7 * err / gain)
                                 e["act"] = f"steer {err:+.0f}"
                     elif "act" not in e:
+                        # 到了任务点 (标记不见了或就在脚下): 站着别动 (任务点常在崖边), 先点交互 / 对话; 20 秒没进展再试攻击
+                        nav.runner.pause()
                         near_since = near_since or t1
                         dt = t1 - near_since
-                        if dt > 3:
+                        if int(dt) % 2 == 0:
                             nav.tap(INTERACT)
                             e["act"] = "interact"
-                        if dt > 8:
-                            for _ in range(6):
+                        if dt > 20:
+                            for _ in range(4):
                                 nav.tap(ATTACK)
                                 time.sleep(0.35)
-                            nav.runner.turn(0.15)
                             e["act"] = "attack"
-                        if dt > 25:
+                        if dt > 40:
                             near_since = None
                     if t1 - last_png > 6:
                         gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_w.png"))
