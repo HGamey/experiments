@@ -425,6 +425,7 @@ def luma(shot):
 ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时是「落下」
 INTERACT = (0.63, 0.50)     # 交互提示 (对话 / 调查) 出现在角色右侧
 DIALOG_TAP = (0.75, 0.63)   # 对话里点这里: 普通对话点哪都翻页, 有选项时正好落在选项列表上
+REVIVE = (0.50, 0.89)       # 摔死 / 淹死后的「复苏」按钮 (对话里点这里也只是翻页)
 
 
 class Navigator:
@@ -707,8 +708,9 @@ def story(a):
                     if t1 - last_png > 3:
                         gi_enter.save_png(s, os.path.join(out, f"s{k:03d}_d.png"))
                         last_png, k = time.time(), k + 1
-                    nav.tap(DIALOG_TAP)
-                    e["act"] = "dialog_tap"
+                    tap_pt = DIALOG_TAP if len(rec["log"]) % 2 == 0 else REVIVE
+                    nav.tap(tap_pt)
+                    e["act"] = "dialog_tap" if tap_pt is DIALOG_TAP else "revive_tap"
                 rec["log"].append(e)
                 if len(rec["log"]) % 10 == 0:
                     json.dump(rec, open(os.path.join(out, "story.json"), "w"), ensure_ascii=False, indent=1)
