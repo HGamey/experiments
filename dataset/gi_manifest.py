@@ -49,7 +49,16 @@ for i, t in enumerate(r["tiers"]):
             else:
                 dropped.append(f"{d}（{mo.get('why') or sg.get('error') or '没采完'}）")
     elif t.get("convert"):
-        units.append((i, None, t["tier"], t["tier"], t))
+        mo = t["convert"].get("motion")
+        seq = t.get("seq") or {}
+        if mo is None:                      # 没量运动的旧采集: 照旧整档收
+            units.append((i, None, t["tier"], t["tier"], t))
+        elif not mo.get("ok"):
+            dropped.append(f"{t['tier']}（{mo.get('why')}）")
+        elif seq.get("frames_missed") != 0 or t["convert"]["complete"] < 240:
+            dropped.append(f"{t['tier']}（不连续：漏 {seq.get('frames_missed')} 帧，完整 {t['convert']['complete']} 帧）")
+        else:
+            units.append((i, None, t["tier"], t["tier"], t))
 
 frames = sum(u[4]["convert"]["frames"] for u in units)
 complete = sum(u[4]["convert"]["complete"] for u in units)
@@ -99,13 +108,14 @@ atts = units[0][4]["convert"]["atts"] if units else {}
 FMT = {37: "RGBA8", 129: "D24S8", 58: "A2R10G10B10"}
 att_desc = "、".join(f"{k} {FMT.get(v['vk_format'], v['vk_format'])}" for k, v in atts.items()) + "，每档都和送显同尺寸"
 multi = any(u[1] is not None for u in units)
+measured = any(u[4]["convert"].get("motion") for u in units)
 claims = [f"{a.desc}。" + (f"每档在同一次会话里沿路线连采几段、每段 {r['frames']} 帧，收录的段：" + "、".join(u[3] for u in units)
                           + "；各档帧数：" + "、".join(f"{tt} {n}" for tt, n in per_tier.items()) + "。" if multi
-                          else f"每档一段连续 {r['frames']} 帧。") + f"{present}。附件：{att_desc}。",
+                          else f"每档一段连续 {r['frames']} 帧" + ("，收录的目录：" + "、".join(u[3] for u in units) if dropped else "") + "。") + f"{present}。附件：{att_desc}。",
           "目录：<档>/" + ("s<段>/" if multi else "") + "ui/（带 UI，RGB8 PNG）、noui/（不带 UI）、depth16/（深度高 16 位）、depth24/（24 位无损，R 高 G 中 B 低）、"
           "mv/（速度图，原始 32 位小端存成 RGBA8 PNG）、index.csv、checks.csv（含逐帧运动量）、summary.json、session.json。",
           "附件已上下翻正。深度是 reverse-Z（近处值大）。速度图 r=(u>>20)&1023 水平、g=(u>>10)&1023 竖直、b=u&1023 角色掩码；v=sign(c−509)·((c−509)/511.5)²，单位画面宽/高；翻正后 y 取反；上一帧位置=这一帧位置−v。"]
-if multi:
+if measured:
     claims.append("运动标准（experiments dataset/fd_motion.py）：近处地面与远处竖直位移差 ≥4 像素（1080p、每 1/60 秒）的帧占 70% 以上 = 角色在跑；"
                   "位移中位数 ≥2 像素且动着的像素 ≥60% 的帧占 70% 以上，且 0.5 秒中央差中位数 ≥3 = 画面在变。收录的段都达标。"
                   + ("不达标没收录的段：" + "、".join(dropped) + "。" if dropped else ""))
