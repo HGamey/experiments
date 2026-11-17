@@ -3,7 +3,8 @@
 
 Android 的 `input` 只有一根手指: 按住摇杆的同时拖镜头, 拖镜头那一下会把摇杆抬起来, 角色就停了。
 这里直接往触摸屏的 evdev 节点 (/dev/input/eventN) 写多点触控协议 B 的事件: adb shell 的 shell 用户在 input 组,
-不用 root, 不改游戏、不改系统设置。每条命令是一句 printf (八进制转义写出 input_event 结构), 经一个常驻 adb shell 发出。
+shell 用户虽在 input 组, SELinux 不让它写输入设备, 所以经一个常驻的 root shell (adb shell su -c sh) 发出;
+每条命令是一句 printf (八进制转义写出 input_event 结构)。不改游戏、不改系统设置。
 坐标一律用「横屏比例坐标」(u, v) ∈ [0,1]², 按 dumpsys input 的显示视口 (方向、wm size 下的物理框) 换成面板坐标。
 
     python3 -I dataset/gi_nav.py <serial> --selftest [--pkg com.miHoYo.Yuanshen] [--tier 1920x1080]
@@ -83,7 +84,7 @@ class Touch:
         self.serial = serial
         self.info = find_touch(serial)
         self.vp = viewport(serial)
-        self.p = subprocess.Popen(["adb", "-s", serial, "shell"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen(["adb", "-s", serial, "shell", "su -c sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, pass_fds=_lock_fds())
         self.active, self.tid, self.lock, self.nsync = set(), 30000, threading.Lock(), 0
 
@@ -164,6 +165,50 @@ class Touch:
             self.p.wait(timeout=10)
         except Exception:
             self.p.kill()
+
+
+def minimap(shot):
+    """读小地图 (北朝上): 角色箭头朝向 heading (度, 0 北 90 东) 和任务标记 (黄色菱形) 的方位 / 距离 (按小地图半径归一)。
+    shot = gi_enter.raw_shot()。箭头是带后缘缺口的青色三角, 离重心最远的几个点是箭尖。读不到的字段为 None。"""
+    if not shot:
+        return {"heading": None, "quest_bearing": None, "quest_dist": None}
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    cx, cy = MINIMAP[0] * W, MINIMAP[1] * H
+    out = {"heading": None, "arrow_px": 0, "quest_bearing": None, "quest_dist": None, "quest_px": 0}
+    ra = 0.03 * H
+    pts = []
+    for y in range(int(cy - ra), int(cy + ra)):
+        for x in range(int(cx - ra), int(cx + ra)):
+            r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
+            if b > 200 and g > 140 and r < 150 and b - r > 80:
+                pts.append((x, y))
+    out["arrow_px"] = len(pts)
+    if len(pts) >= 0.1 * ra * ra:
+        mx, my = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+        far = sorted(pts, key=lambda p: (p[0] - mx) ** 2 + (p[1] - my) ** 2)[-5:]
+        tx, ty = sum(p[0] for p in far) / 5, sum(p[1] for p in far) / 5
+        out["heading"] = round(math.degrees(math.atan2(tx - mx, -(ty - my))) % 360, 1)
+    rq, step = 0.125 * H, max(1, int(H / 540))
+    ye = []
+    for y in range(int(cy - rq), int(cy + rq), step):
+        for x in range(int(cx - rq), int(cx + rq), step):
+            if (x - cx) ** 2 + (y - cy) ** 2 > rq * rq:
+                continue
+            r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
+            if r > 200 and g > 150 and b < 100:
+                ye.append((x, y))
+    out["quest_px"] = len(ye)
+    if len(ye) * step * step >= 0.004 * rq * rq:
+        qx, qy = sum(p[0] for p in ye) / len(ye) - cx, sum(p[1] for p in ye) / len(ye) - cy
+        out["quest_bearing"] = round(math.degrees(math.atan2(qx, -qy)) % 360, 1)
+        out["quest_dist"] = round(math.hypot(qx, qy) / rq, 3)
+    return out
+
+
+def ang_diff(a, b):
+    """a - b, 折到 (-180, 180]。"""
+    return (a - b + 180) % 360 - 180
 
 
 class Runner:
@@ -276,8 +321,34 @@ def selftest(a):
         touch.sync()
         sh(s, f"settings put system pointer_location {rec['before']['pointer_location'] if rec['before']['pointer_location'] in ('0', '1') else 0}")
         time.sleep(1)
-        # 冲刺 + 边跑边转: 4 秒
+        rec["minimap"] = {"world": minimap(gi_enter.raw_shot(s))}
+        # 只拖镜头 (不推摇杆): 北朝上的话箭头和任务方位都不该变
+        touch.down(SLOT_CAM, *CAM)
+        for k in range(1, 16):
+            touch.move(SLOT_CAM, CAM[0] + 0.12 * k / 15, CAM[1])
+            time.sleep(0.03)
+        touch.up(SLOT_CAM)
+        touch.sync()
+        time.sleep(0.8)
+        gi_enter.save_png(s, os.path.join(out, "cam_only.png"))
+        rec["minimap"]["cam_only"] = minimap(gi_enter.raw_shot(s))
+        # 标定: 摇杆前推跑 2 秒读朝向; 边跑边拖 +0.10 再跑 2 秒读; 拖 -0.20 再跑 2 秒读
         aspect = 16 / 9
+        cal = []
+        with Runner(touch, aspect, angle=0, sweep_every=0) as r:
+            time.sleep(2.0)
+            cal.append({"after": "run2s", **minimap(gi_enter.raw_shot(s))})
+            for amp in (0.10, -0.20, 0.10):
+                touch.down(SLOT_CAM, *CAM)
+                for k in range(1, 16):
+                    touch.move(SLOT_CAM, CAM[0] + amp * k / 15, CAM[1])
+                    time.sleep(0.03)
+                touch.up(SLOT_CAM)
+                time.sleep(2.0)
+                cal.append({"after": f"swipe{amp:+.2f}", **minimap(gi_enter.raw_shot(s))})
+        rec["calibration"] = cal
+        step(f"标定: {cal}")
+        # 冲刺 + 边跑边转: 4 秒
         with Runner(touch, aspect, angle=0, sweep_every=1.2, sweep_s=0.6, sprint_on=2.0, sprint_period=4.0) as r:
             time.sleep(2.0)
             gi_enter.save_png(s, os.path.join(out, "run_sprint.png"))
@@ -285,6 +356,7 @@ def selftest(a):
         rec["runner_log"] = r.log
         time.sleep(1)
         gi_enter.save_png(s, os.path.join(out, "after_run.png"))
+        rec["minimap"]["after_run"] = minimap(gi_enter.raw_shot(s))
         touch.tap(SLOT_BTN, *MINIMAP)
         time.sleep(3)
         gi_enter.save_png(s, os.path.join(out, "map.png"))
