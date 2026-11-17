@@ -467,17 +467,42 @@ class Navigator:
         self.inland = inland                # 沿海岸跑时「陆地那侧」的方位: 游泳就往这边转, 爬墙就往反方向转
         self.hist, self.plans, self.flip, self.t0, self.quiet_until, self.cal = [], [], 1, time.time(), 0.0, None
 
-    def segment_start(self, secs=None):
-        """采集段开始: 一直按住冲刺; secs 给了就绕大圈跑 —— 整段用一次慢速长拖让镜头匀速转约 0.33 个画面宽
-        (约 230°), 角色跟着镜头跑出半径十来米的弧线, 镜头也一直在转; 左右交替。不给 secs 就是左右对称摆镜头。"""
+    def segment_start(self, secs=None, watch=False):
+        """采集段开始: 一直按住冲刺; secs 给了就绕大圈跑 —— 镜头匀速转约 0.33 个画面宽 (约 230°), 角色跟着镜头跑弧线,
+        左右交替。watch=True 时段内每秒截一次图: 认出爬墙 (攻击键成了「落下」) 就点落下、转开 120°, 游泳也转开;
+        这时绕圈拆成每秒一小段拖动, 好让转开的那一下插进来。不给 secs 就是左右对称摆镜头。"""
         self.runner.force_sprint = True
-        if secs:
-            self.circle_dir = -getattr(self, "circle_dir", -1)
-            self.runner.turn(0.33 * self.circle_dir, secs)
-        else:
+        self.seg_log = []
+        if not secs:
             self.runner.start_sweeps()
+            return
+        self.circle_dir = -getattr(self, "circle_dir", -1)
+        if not watch:
+            self.runner.turn(0.33 * self.circle_dir, secs)
+            return
+        self.seg_stop = threading.Event()
+
+        def loop():
+            t_end, gain = time.time() + secs, self.gain or 700.0
+            while not self.seg_stop.is_set() and time.time() < t_end:
+                t1 = time.time()
+                self.runner.turn(0.055 * self.circle_dir, 0.9)
+                shot = gi_enter.raw_shot(self.s)
+                st = hud(shot)["state"] if shot else None
+                if st and st != "normal":
+                    if st == "other":
+                        self.tap(ATTACK)
+                    self.runner.turn(120 * self.circle_dir / gain, 0.5)
+                    self.seg_log.append({"t": round(t1 - self.t0, 1), "state": st})
+                self.seg_stop.wait(max(0.0, 1.0 - (time.time() - t1)))
+        self.seg_th = threading.Thread(target=loop, daemon=True)
+        self.seg_th.start()
 
     def segment_end(self):
+        if getattr(self, "seg_th", None):
+            self.seg_stop.set()
+            self.seg_th.join(timeout=5)
+            self.seg_th = None
         self.runner.force_sprint = False
         self.runner.stop_sweeps()
 

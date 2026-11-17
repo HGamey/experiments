@@ -187,6 +187,7 @@ def main():
                     help="nav: gi_nav 多指导航 (摇杆 + 冲刺 + 边跑边转镜头, 按小地图修方向), 段间修正")
     ap.add_argument("--segments", type=int, default=1, help="每档连采几段 (同一会话, 每段 --frames 帧; nav 时段间跑 --gap-s 秒)")
     ap.add_argument("--gap-s", type=float, default=8, help="nav: 每段之前跑多少秒 (修方向、换地方; 也给手机时间把上一段写完)")
+    ap.add_argument("--seg-watch", action="store_true", help="nav: 段内每秒截图看是否在爬墙/游泳, 是就落下并转开 (截图可能让个别帧间隔变长)")
     ap.add_argument("--fan", action="store_true", help="采集期间打开红魔散热风扇 (/sys/kernel/fan/fan_enable), 收尾恢复原值")
     ap.add_argument("--circle", action="store_true", help="nav: 段内绕大圈跑 (整段匀速转镜头约 230°, 左右交替), 不容易一头撞墙")
     ap.add_argument("--heading", type=float, default=160, help="nav: 起始目标方向, 度 (0 北 90 东)")
@@ -288,9 +289,10 @@ def main():
                         with nav:
                             for lab in labels:
                                 sg = {"label": lab, "gap": nav.gap(a.gap_s)}
-                                nav.segment_start(a.frames / 60 + 0.5 if a.circle else None)   # 段内冲刺; --circle 绕大圈跑
+                                nav.segment_start(a.frames / 60 + 0.5 if a.circle else None, a.seg_watch)   # 段内冲刺; --circle 绕大圈跑
                                 sg.update(trigger(dev, base, lab, a.frames))
                                 nav.segment_end()
+                                sg["seg_watch"] = getattr(nav, "seg_log", [])
                                 t["segments"].append(sg)
                                 step(f"{tier} {lab}: 采完={sg['finished']}, 目标方向 {nav.target:.0f}")
                         a.heading = nav.pref            # 下一档接着这个方向跑
