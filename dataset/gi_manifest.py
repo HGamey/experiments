@@ -133,5 +133,7 @@ m = {
                                   + ("；多指注入导航（摇杆 + 冲刺 + 边跑边转镜头，按小地图修方向）" if multi else ""),
                 "frames": frames, "scenes": 1, "splits": None, "size_bytes": size, "location": f"job:{job}:{root}/"},
 }
+if len(a.supersedes) == 1:
+    m["supersedes"] = a.supersedes[0]      # 平台的 supersedes 字段只收一个 id; 多个就只写在 claims 里
 print(json.dumps(m, ensure_ascii=False, indent=1))
 print(f"frames={frames} complete={complete} size={size} dropped={dropped}", file=sys.stderr)
