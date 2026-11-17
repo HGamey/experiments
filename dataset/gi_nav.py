@@ -8,10 +8,12 @@ shell 用户虽在 input 组, SELinux 不让它写输入设备, 所以经一个�
 坐标一律用「横屏比例坐标」(u, v) ∈ [0,1]², 按 dumpsys input 的显示视口 (方向、wm size 下的物理框) 换成面板坐标。
 
     python3 -I dataset/gi_nav.py <serial> --selftest [--pkg com.miHoYo.Yuanshen] [--tier 1920x1080]
+    python3 -I dataset/gi_nav.py <serial> --trial 150 [--heading 160] [--gap-s 8] [--seg-s 6] [--min-luma 0]
 自检: wm size → 进世界 → 打开「指针位置」叠加 → 两指同时 (摇杆前推 + 横拖镜头) → 截图 → 关叠加
       → 截小地图 / 点开大地图截图 → 收尾 (还原指针位置、wm size、强停游戏、HOME)。截图和 nav.json 写到 $PF_JOB_OUT/nav_selftest_<时间>/。
 """
 import argparse
+import collections
 import json
 import math
 import os
@@ -212,53 +214,86 @@ def ang_diff(a, b):
 
 
 class Runner:
-    """后台线程: 按住摇杆按 angle (度, 0 正前、90 向右, 相对镜头) 推; 每 sweep_every 秒拖一次镜头 (左右交替);
-    冲刺键每 sprint_period 秒按住 sprint_on 秒 (sprint_on=0 不冲刺)。angle 可随时改。"""
+    """后台线程: 按住摇杆按 angle 推 (度, 0 正前、90 向右, 相对镜头); 拖镜头排队执行 (turn(du): 横拖 du 个画面宽, 正值向右拖,
+    角色跟着镜头转); 每 sweep_every 秒自动左右交替摆一次 (幅度 sweep_amp, 0 关); 冲刺键每 sprint_period 秒按住 sprint_on 秒。
+    pause() 抬起所有手指 (开大地图、点按钮前用), resume() 接着跑。"""
 
     def __init__(self, touch, aspect, angle=0.0, sweep_every=3.0, sweep_s=0.8, sweep_amp=0.10, sprint_on=0.0, sprint_period=6.0,
                  hz=20):
         self.t, self.aspect, self.angle = touch, aspect, angle
         self.sweep_every, self.sweep_s, self.sweep_amp = sweep_every, sweep_s, sweep_amp
         self.sprint_on, self.sprint_period, self.hz = sprint_on, sprint_period, hz
-        self.stop_ev, self.th, self.sweeps = threading.Event(), None, 0
-        self.log = []
+        self.stop_ev, self.paused, self.idle, self.th, self.sweeps = threading.Event(), threading.Event(), threading.Event(), None, 0
+        self.queue, self.log, self.t0 = collections.deque(), [], time.time()
 
     def stick_point(self, a):
         r = STICK_R
         return STICK[0] + r * math.sin(math.radians(a)) / self.aspect, STICK[1] - r * math.cos(math.radians(a))
 
+    def turn(self, du, secs=None):
+        while abs(du) > 1e-4:
+            d = max(-0.33, min(0.33, du))
+            self.queue.append((d, secs or max(0.3, min(1.0, abs(d) * 4))))
+            du -= d
+
+    def pause(self):
+        self.idle.clear()
+        self.paused.set()
+        self.idle.wait(3)
+
+    def resume(self):
+        self.paused.clear()
+
     def _loop(self):
         t = self.t
-        t.down(SLOT_STICK, *STICK)
-        time.sleep(0.05)
-        t0, cur, sweep_t0, sweep_dir, btn = time.time(), None, None, 1, False
-        next_sweep = t0 + self.sweep_every if self.sweep_every > 0 else float("inf")
+        held, cur, swipe, sweep_dir, btn = False, None, None, 1, False
+        next_sweep = time.time() + self.sweep_every if self.sweep_every > 0 else float("inf")
         while not self.stop_ev.is_set():
             now = time.time()
+            if self.paused.is_set():
+                if held or swipe or btn:
+                    for sl in (SLOT_CAM, SLOT_BTN, SLOT_STICK):
+                        t.up(sl)
+                    held, swipe, btn, cur = False, None, False, None
+                self.idle.set()
+                time.sleep(0.05)
+                continue
+            if not held:
+                t.down(SLOT_STICK, *STICK)
+                held, cur = True, None
+                time.sleep(0.05)
             if cur != self.angle:
                 cur = self.angle
                 t.move(SLOT_STICK, *self.stick_point(cur))
-            if sweep_t0 is None and now >= next_sweep:
-                sweep_t0 = now
-                t.down(SLOT_CAM, *CAM)
-            if sweep_t0 is not None:
-                k = min(1.0, (now - sweep_t0) / self.sweep_s)
-                t.move(SLOT_CAM, CAM[0] + sweep_dir * self.sweep_amp * k, CAM[1])
+            if swipe is None:
+                if self.queue:
+                    du, secs = self.queue.popleft()
+                    swipe = [now, du, secs, "turn"]
+                elif now >= next_sweep:
+                    swipe = [now, sweep_dir * self.sweep_amp, self.sweep_s, "sweep"]
+                    sweep_dir = -sweep_dir
+                if swipe:
+                    t.down(SLOT_CAM, *CAM)
+            if swipe:
+                k = min(1.0, (now - swipe[0]) / swipe[2])
+                t.move(SLOT_CAM, CAM[0] + swipe[1] * k, CAM[1])
                 if k >= 1.0:
                     t.up(SLOT_CAM)
-                    self.log.append({"t": round(now - t0, 2), "sweep": sweep_dir})
-                    sweep_t0, sweep_dir, self.sweeps = None, -sweep_dir, self.sweeps + 1
-                    next_sweep = now + self.sweep_every
+                    self.log.append({"t": round(now - self.t0, 2), swipe[3]: round(swipe[1], 3)})
+                    if swipe[3] == "sweep":
+                        self.sweeps += 1
+                        next_sweep = now + self.sweep_every
+                    swipe = None
             if self.sprint_on > 0:
-                want = ((now - t0) % self.sprint_period) < self.sprint_on
+                want = ((now - self.t0) % self.sprint_period) < self.sprint_on
                 if want and not btn:
                     t.down(SLOT_BTN, *SPRINT)
                 elif btn and not want:
                     t.up(SLOT_BTN)
                 btn = want
             time.sleep(1.0 / self.hz)
-        for s in (SLOT_CAM, SLOT_BTN, SLOT_STICK):
-            t.up(s)
+        for sl in (SLOT_CAM, SLOT_BTN, SLOT_STICK):
+            t.up(sl)
 
     def __enter__(self):
         self.th = threading.Thread(target=self._loop, daemon=True)
@@ -269,6 +304,180 @@ class Runner:
         self.stop_ev.set()
         self.th.join(timeout=10)
         self.t.sync(5)
+
+
+def map_free(shot, n=16):
+    """大地图 (打开时以角色为中心) 上沿 n 个方位找红色的可活动区边界。返回 {方位度: 距离 (按画面高归一), None = 到画面边都没碰到}。"""
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    cx, cy, st = W / 2, H / 2, max(2, H // 360)
+    out = {}
+    for i in range(n):
+        a = 360.0 * i / n
+        dx, dy = math.sin(math.radians(a)), -math.cos(math.radians(a))
+        r, hit = 0.03 * H, None
+        while True:
+            x, y = cx + dx * r, cy + dy * r
+            if not (st + 1 <= x < W - st - 1 and st + 1 <= y < H - st - 1):
+                break
+            for ox, oy in ((0, 0), (-st, 0), (st, 0), (0, -st), (0, st)):
+                cr, cg, cb = gi_enter.pixel(shot, (x + ox) / (W - 1), (y + oy) / (H - 1))
+                if cr - max(cg, cb) > 25 and cg < 100 and cb > cg:   # 边界偏粉; 任务菱形描边偏橙 (b < g)
+                    hit = r
+                    break
+            if hit is not None:
+                break
+            r += st
+        out[a] = round(hit / H, 3) if hit is not None else None
+    return out
+
+
+def luma(shot):
+    """画面中央 (x 0.3–0.7, y 0.2–0.75) 的平均灰度; 白天 90–150, 夜里 40–65。"""
+    if not shot:
+        return None
+    v = [sum(gi_enter.pixel(shot, 0.3 + 0.4 * i / 23, 0.2 + 0.55 * j / 11)[k] * c for k, c in ((0, .299), (1, .587), (2, .114)))
+         for i in range(24) for j in range(12)]
+    return round(sum(v) / len(v), 1)
+
+
+ATTACK = (0.826, 0.766)     # 攻击键; 攀爬时变成「落下」
+BTN_BOX = (0.79, 0.69, 0.875, 0.845)
+SLOT_TAP = 6
+
+
+def button_mask(shot):
+    """攻击键区域的白色像素集合 (按 2 像素步长采样)。站在地上是剑, 攀爬/游泳时图标会换。"""
+    w, h, _ = shot
+    W, H = max(w, h), min(w, h)
+    m, n = set(), 0
+    for y in range(int(BTN_BOX[1] * H), int(BTN_BOX[3] * H), 2):
+        for x in range(int(BTN_BOX[0] * W), int(BTN_BOX[2] * W), 2):
+            r, g, b = gi_enter.pixel(shot, x / (W - 1), y / (H - 1))
+            n += 1
+            if r * 299 + g * 587 + b * 114 > 200000:
+                m.add((x * 1000 // W, y * 1000 // H))
+    return m, n
+
+
+class Navigator:
+    """沿一个方向跑出去: Runner 一直推摇杆、间歇冲刺、镜头小幅左右摆 (角色跟着镜头走 S 形)。
+    不采集的时候 (gap) 每 ~1.2 秒截一次图:
+      - 小地图箭头 = 角色朝向; 和目标方向差 > 12° 就拖镜头修正 (增益 gain 度/画面宽, 实测约 -580: 向右拖, 角色向左转)
+      - 攻击键图标变了 (和刚进世界时的剑重合度 < 0.5) = 在攀爬或游泳: 点「落下」, 掉头 180°
+      - 任务标记在小地图里却 2 次截图都没动 = 卡住: 跳一下, 左右交替转 70°
+    每个 gap 开头打开一次大地图, 按红色边界挑方向: 离边界远的方向优先, 不往回走 (和当前目标差 > 120° 的方向扣分)。
+    采集段内 quiet: 不截图 (截图会打断合成), Runner 照跑。"""
+
+    def __init__(self, serial, touch, aspect, log=print, heading=180.0, gain=-580.0, sweep_amp=0.05, sweep_every=2.5,
+                 sprint_on=2.5, sprint_period=5.0, min_luma=80.0, max_wait_s=720):
+        self.s, self.touch, self.log = serial, touch, log
+        self.runner = Runner(touch, aspect, 0.0, sweep_every, 0.7, sweep_amp, sprint_on, sprint_period)
+        self.target, self.gain, self.min_luma, self.max_wait_s = heading % 360, gain, min_luma, max_wait_s
+        self.ref, self.hist, self.plans, self.flip, self.t0 = None, [], [], 1, time.time()
+
+    def __enter__(self):
+        self.runner.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self.runner.__exit__(*exc)
+
+    def _rec(self, **kw):
+        r = {"t": round(time.time() - self.t0, 1), **kw}
+        self.hist.append(r)
+        return r
+
+    def tap(self, pt, hold=0.08):
+        self.touch.tap(SLOT_TAP, *pt, hold)
+
+    def check(self):
+        shot = gi_enter.raw_shot(self.s)
+        if not shot:
+            return self._rec(err="截图失败")
+        mm = minimap(shot)
+        m, n = button_mask(shot)
+        if self.ref is None and 0.07 < len(m) / n < 0.17:
+            self.ref = m
+        iou = len(m & self.ref) / max(1, len(m | self.ref)) if self.ref is not None else None
+        rec = self._rec(heading=mm["heading"], quest=[mm["quest_bearing"], mm["quest_dist"]], btn_iou=None if iou is None else round(iou, 2),
+                        target=round(self.target, 1))
+        prev = [h for h in self.hist[-3:-1] if h.get("quest") and h["quest"][1] is not None]
+        if iou is not None and iou < 0.5:
+            rec["action"] = "recover"
+            self.recover(mm["heading"])
+        elif (mm["quest_dist"] is not None and mm["quest_dist"] < 0.95 and len(prev) == 2
+              and all(abs(p["quest"][1] - mm["quest_dist"]) < 0.012 and abs(ang_diff(p["quest"][0], mm["quest_bearing"])) < 2 for p in prev)):
+            rec["action"] = "unstick"
+            self.tap(JUMP)
+            self.target = (self.target + 70 * self.flip) % 360
+            self.flip = -self.flip
+            self.runner.turn((70 * -self.flip) / self.gain)
+        elif mm["heading"] is not None:
+            e = ang_diff(self.target, mm["heading"])
+            rec["err"] = round(e, 1)
+            if abs(e) > 12:
+                du = e / self.gain
+                rec["action"] = f"steer {du:+.3f}"
+                self.runner.turn(du)
+        return rec
+
+    def recover(self, heading):
+        self.runner.pause()
+        self.tap(ATTACK)
+        time.sleep(1.5)
+        self.tap(ATTACK)
+        time.sleep(1.0)
+        self.runner.resume()
+        self.target = ((heading if heading is not None else self.target) + 180) % 360
+        self.runner.turn(180 / self.gain)
+
+    def replan(self):
+        self.runner.pause()
+        self.tap(MINIMAP)
+        time.sleep(2.5)
+        shot = gi_enter.raw_shot(self.s)
+        sh(self.s, "input keyevent KEYCODE_BACK")
+        time.sleep(1.5)
+        self.runner.resume()
+        if not shot:
+            return None
+        free = map_free(shot)
+        best, score = None, None
+        for a, d in free.items():
+            v = (d if d is not None else 0.6) - abs(ang_diff(a, self.target)) / 400.0 - (0.5 if abs(ang_diff(a, self.target)) > 120 else 0)
+            if score is None or v > score:
+                best, score = a, v
+        plan = {"t": round(time.time() - self.t0, 1), "free": free, "old": round(self.target, 1), "new": best}
+        self.plans.append(plan)
+        if best is not None and (free.get(min(free, key=lambda k: abs(ang_diff(k, self.target)))) or 1) < 0.25:
+            self.target = best        # 当前方向离边界不到 1/4 屏才换方向, 否则保持
+        return plan
+
+    def wait_daylight(self):
+        t0 = time.time()
+        while True:
+            lu = luma(gi_enter.raw_shot(self.s))
+            if lu is None or lu >= self.min_luma or time.time() - t0 > self.max_wait_s:
+                return {"luma": lu, "waited_s": round(time.time() - t0)}
+            if not self.runner.paused.is_set():
+                self.runner.pause()
+                self.log(f"画面太暗 ({lu} < {self.min_luma}), 停下等天亮")
+            time.sleep(30)
+
+    def gap(self, secs, replan=True):
+        """不采集的一段: 等天亮 → (开大地图挑方向) → 跑 secs 秒并每 1.2 秒修正一次; 结束时要状态正常、方向差 < 25°, 否则最多再跑 8 秒。"""
+        out = {"day": self.wait_daylight() if self.min_luma else None}
+        self.runner.resume()
+        if replan:
+            out["plan"] = self.replan()
+        t_end, last = time.time() + secs, None
+        while time.time() < t_end or (last and (last.get("action") or abs(last.get("err") or 0) > 25) and time.time() < t_end + 8):
+            t1 = time.time()
+            last = self.check()
+            time.sleep(max(0.0, 1.2 - (time.time() - t1)))
+        out["last"] = last
+        return out
 
 
 def selftest(a):
@@ -381,13 +590,76 @@ def selftest(a):
         step(f"收尾: {rec['restore']}")
 
 
+def trial(a):
+    """只跑不采: 进世界后循环「gap (修正方向) → seg_s 秒安静 (模拟采集段)」直到 --trial 秒, 每轮截一张图, 记录导航过程。"""
+    out = os.path.join(os.environ.get("PF_JOB_OUT") or ".", f"nav_trial_{time.strftime('%Y%m%d-%H%M%S')}")
+    os.makedirs(out)
+    rec = {"steps": [], "args": vars(a)}
+
+    def step(msg):
+        rec["steps"].append({"t": round(time.time(), 1), "msg": msg})
+        print(msg, flush=True)
+        json.dump(rec, open(os.path.join(out, "nav.json"), "w"), ensure_ascii=False, indent=1)
+
+    s = a.serial
+    rec["before"] = {"wm_size": sh(s, "wm size").strip()}
+    if "Override" in rec["before"]["wm_size"]:
+        step(f"手机上已有 wm size 覆盖, 不动: {rec['before']}")
+        return 2
+    touch = None
+    try:
+        sh(s, "input keyevent KEYCODE_WAKEUP")
+        w, h = 16, 9
+        if a.tier != "native":
+            w, h = (int(x) for x in a.tier.split("x"))
+            sh(s, f"wm size {h}x{w}")
+        ok, secs, taps = gi_enter.enter_world(s, a.pkg, cold=True, timeout=600, log=step, fail_png=os.path.join(out, "enter_fail.png"))
+        rec["enter"] = {"ok": ok, "seconds": secs}
+        if not ok:
+            raise RuntimeError("没进世界")
+        time.sleep(5)
+        touch = Touch(s)
+        gi_enter.save_png(s, os.path.join(out, "start.png"))
+        with Navigator(s, touch, w / h, log=step, heading=a.heading, min_luma=a.min_luma) as nav:
+            t_end, k = time.time() + a.trial, 0
+            while time.time() < t_end:
+                g = nav.gap(a.gap_s)
+                step(f"gap {k}: plan={g.get('plan') and g['plan'].get('new')} target={nav.target:.0f} last={g['last']}")
+                gi_enter.save_png(s, os.path.join(out, f"seg{k:02d}.png"))
+                time.sleep(a.seg_s)
+                k += 1
+            rec["hist"], rec["plans"], rec["runner_log"] = nav.hist, nav.plans, nav.runner.log
+        time.sleep(1)
+        gi_enter.save_png(s, os.path.join(out, "end.png"))
+        step("trial 完成")
+        return 0
+    except Exception as e:
+        step(f"出错: {type(e).__name__}: {e}")
+        return 1
+    finally:
+        if touch:
+            touch.close()
+        sh(s, f"am force-stop {a.pkg}")
+        sh(s, "wm size reset")
+        sh(s, "input keyevent KEYCODE_HOME")
+        rec["restore"] = {"wm_size": sh(s, "wm size").strip(), "game_running": bool(sh(s, f"pidof {a.pkg}").strip())}
+        step(f"收尾: {rec['restore']}")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("serial")
     ap.add_argument("--pkg", default="com.miHoYo.Yuanshen")
     ap.add_argument("--tier", default="1920x1080")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--trial", type=float, default=0, help="只跑不采这么多秒, 检验导航")
+    ap.add_argument("--heading", type=float, default=160, help="起始目标方向, 度 (0 北 90 东)")
+    ap.add_argument("--gap-s", type=float, default=8)
+    ap.add_argument("--seg-s", type=float, default=6)
+    ap.add_argument("--min-luma", type=float, default=0, help="画面中央平均灰度低于它就停下等天亮 (0 不等)")
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest(a))
-    ap.error("目前只有 --selftest; 采集里用 Touch / Runner / Navigator")
+    if a.trial > 0:
+        sys.exit(trial(a))
+    ap.error("给 --selftest 或 --trial; 采集里用 Touch / Runner / Navigator")
