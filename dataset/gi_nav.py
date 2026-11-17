@@ -1067,6 +1067,93 @@ def trial(a):
         step(f"收尾: {rec['restore']}")
 
 
+def probe_return(a):
+    """看「返回任务点」传回去的地方: 传回后站着读 6 次朝向 (看读数抖不抖), 每次转 45° 存一张图 (8 张),
+    开大地图存一张, 再背对原朝向直跑 6 秒不修方向、每 0.6 秒读一次朝向 (看是被地形带偏还是读错)。"""
+    out = os.path.join(os.environ.get("PF_JOB_OUT") or ".", f"nav_return_{time.strftime('%Y%m%d-%H%M%S')}")
+    os.makedirs(out)
+    rec = {"steps": [], "args": vars(a)}
+
+    def step(msg):
+        rec["steps"].append({"t": round(time.time(), 1), "msg": msg})
+        print(msg, flush=True)
+        json.dump(rec, open(os.path.join(out, "nav.json"), "w"), ensure_ascii=False, indent=1)
+
+    s = a.serial
+    rec["before"] = {"wm_size": sh(s, "wm size").strip()}
+    if "Override" in rec["before"]["wm_size"]:
+        step(f"手机上已有 wm size 覆盖, 不动: {rec['before']}")
+        return 2
+    touch = None
+    try:
+        sh(s, "input keyevent KEYCODE_WAKEUP")
+        w, h = 16, 9
+        if a.tier != "native":
+            w, h = (int(x) for x in a.tier.split("x"))
+            sh(s, f"wm size {h}x{w}")
+        ok, secs, taps = gi_enter.enter_world(s, a.pkg, cold=True, timeout=600, log=step, fail_png=os.path.join(out, "enter_fail.png"))
+        rec["enter"] = {"ok": ok, "seconds": secs}
+        if not ok:
+            raise RuntimeError("没进世界")
+        time.sleep(5)
+        touch = Touch(s)
+        with Navigator(s, touch, w / h, log=step, heading=a.heading, min_luma=0) as nav:
+            nav.runner.pause()
+            rec["calibration"] = nav.calibrate()
+            step(f"标定 {rec['calibration']}")
+            gi_enter.save_png(s, os.path.join(out, "before_return.png"))
+            shot = gi_enter.raw_shot(s)
+            rec["return_button"] = bool(shot and return_button(shot))
+            nav.tap(RETURN_BTN)
+            time.sleep(7)
+            gi_enter.save_png(s, os.path.join(out, "ret.png"))
+            rec["standing"] = [nav.read() for _ in range(6)]
+            step(f"站着读朝向: {[r and r['heading'] for r in rec['standing']]}")
+            h0 = next((r["heading"] for r in rec["standing"] if r and r["heading"] is not None), None)
+            rec["turns"] = []
+            for k in range(8):
+                nav.turn_standing(45)
+                time.sleep(0.8)
+                gi_enter.save_png(s, os.path.join(out, f"turn{k}.png"))
+                r = nav.read()
+                rec["turns"].append(r)
+                step(f"转 {45 * (k + 1)}°: 朝向 {r and r['heading']} 状态 {r and r['state']}")
+            nav.tap(MINIMAP)
+            time.sleep(2.5)
+            gi_enter.save_png(s, os.path.join(out, "map.png"))
+            sh(s, "input keyevent KEYCODE_BACK")
+            time.sleep(1.5)
+            nav.tap(RETURN_BTN)
+            time.sleep(7)
+            nav.turn_standing(180)
+            nav.runner.force_sprint = True
+            nav.runner.resume()
+            t0, run = time.time(), []
+            while time.time() - t0 < 6:
+                r = nav.read()
+                run.append({"t": round(time.time() - t0, 2), "heading": r and r["heading"], "state": r and r["state"],
+                            "quest": r and [r["quest_bearing"], r["quest_dist"]]})
+                if len(run) % 3 == 0:
+                    gi_enter.save_png(s, os.path.join(out, f"run{len(run):02d}.png"))
+            nav.runner.pause()
+            nav.runner.force_sprint = False
+            rec["run"], rec["h0"] = run, h0
+            step(f"直跑: {[(x['t'], x['heading'], x['state']) for x in run]}")
+        step("probe 完成")
+        return 0
+    except Exception as e:
+        step(f"出错: {type(e).__name__}: {e}")
+        return 1
+    finally:
+        if touch:
+            touch.close()
+        sh(s, f"am force-stop {a.pkg}")
+        sh(s, "wm size reset")
+        sh(s, "input keyevent KEYCODE_HOME")
+        rec["restore"] = {"wm_size": sh(s, "wm size").strip(), "game_running": bool(sh(s, f"pidof {a.pkg}").strip())}
+        step(f"收尾: {rec['restore']}")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("serial")
@@ -1080,6 +1167,7 @@ if __name__ == "__main__":
     ap.add_argument("--min-luma", type=float, default=0, help="画面中央平均灰度低于它就停下等天亮 (0 不等)")
     ap.add_argument("--inland", type=float, help="沿海岸跑: 陆地那侧的方位 (游泳往这边转, 爬墙往反方向转)")
     ap.add_argument("--story", type=float, default=0, help="推进开场剧情这么多秒 (朝任务标记跑、点对话、打怪)")
+    ap.add_argument("--probe-return", action="store_true", help="看「返回任务点」传回去的地方: 转一圈截图、读朝向、直跑 6 秒")
     ap.add_argument("--sprint-on", type=float, default=0.0, help="story 时冲刺键每 5 秒按住几秒 (0 不冲刺, 省体力)")
     a = ap.parse_args()
     if a.selftest:
@@ -1088,4 +1176,6 @@ if __name__ == "__main__":
         sys.exit(trial(a))
     if a.story > 0:
         sys.exit(story(a))
+    if a.probe_return:
+        sys.exit(probe_return(a))
     ap.error("给 --selftest 或 --trial; 采集里用 Touch / Runner / Navigator")
